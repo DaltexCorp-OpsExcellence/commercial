@@ -2674,6 +2674,9 @@ window.CRM = (function(){
   var LM_SOURCES=[['manual','Manual'],['qr_vcard','QR / vCard'],['ocr_card','Card OCR'],['public_form','Public form'],['csv_import','CSV import']];
   function lmSourceLabel(s){ for(var i=0;i<LM_SOURCES.length;i++) if(LM_SOURCES[i][0]===s) return LM_SOURCES[i][1]; return s||'—'; }
   function lmAge(ts){ if(!ts) return '—'; var d=Math.floor((Date.now()-new Date(ts).getTime())/86400000); if(d<=0) return 'today'; if(d===1) return '1d'; if(d<30) return d+'d'; return Math.floor(d/30)+'mo'; }
+  function lmDays(ts){ if(!ts) return 0; var d=Math.floor((Date.now()-new Date(ts).getTime())/86400000); return d<0?0:d; }
+  /* "waited Nd" phrasing off the inbox clock (assignedAt = when it was routed to the region) */
+  function lmWaited(ts){ var d=lmDays(ts); return d<=0?'today':(d===1?'1d':d+'d'); }
   function lmDate(ts){ if(!ts) return '—'; try{ return new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }catch(e){ return String(ts).slice(0,10); } }
   function lmMap(r){
     return {id:r.id, ref:'#'+String(r.id||'').slice(0,8),
@@ -2758,18 +2761,66 @@ window.CRM = (function(){
      Advanceable only once a lead has an owner (Accepted). Who: the owner, a manager of the lead's
      region, or an admin (lmIsManagerOf already folds in admin). Persists in crm_leads.stage (3–7). */
   function lmCanAdvance(l){ return !lmIsReturned(l) && !!l.assignedTo && (lmIsMine(l)||lmIsManagerOf(l.assignedRegion)); }
+  /* Deal progress — ALWAYS shown (read-only until the lead is Accepted). Maps the lead onto the
+     8-stage funnel via lmFunnelStage; advance controls appear only for the owner/manager/admin. */
   function lmDealStepperHtml(l){
-    if(lmIsReturned(l)||!l.assignedTo) return '';
-    var cur=(l.stage>=2?l.stage:2);
-    var chips=L_STAGES.slice(2).map(function(s){ return '<span class="badge '+(s.i===cur?(s.badge||'badge-pass'):'badge-n')+'"'+(s.i===cur?'':' style="opacity:.45"')+'>'+esc(s.label)+'</span>'; }).join(' ');
+    if(lmIsReturned(l)) return '<div class="l-qsec">Deal progress</div><div class="cell-sub">Returned to marketing'+(l.returnReason?' · '+esc(l.returnReason):'')+'. Re-queue to resume the funnel.</div>';
+    var cur=lmFunnelStage(l);
+    var steps=L_STAGES.map(function(s,ix){
+      var st=s.i<cur?'done':(s.i===cur?'now':'todo');
+      return '<span class="l-step '+st+'">'+esc(s.label)+'</span>'+(ix<L_STAGES.length-1?'<span class="l-stepbar'+(s.i<cur?' done':'')+'"></span>':'');
+    }).join('');
     var ctl='';
     if(lmCanAdvance(l)){
-      var parts=[];
-      if(cur>2) parts.push('<button class="btn btn-secondary btn-sm" onclick="CRM.lmSetDealStage(\''+l.id+'\','+(cur-1)+')">← '+esc(L_STAGES[cur-1].label)+'</button>');
-      if(cur<7) parts.push('<button class="btn btn-primary btn-sm" onclick="CRM.lmSetDealStage(\''+l.id+'\','+(cur+1)+')">'+esc(L_STAGES[cur+1].label)+' →</button>');
-      ctl='<div style="display:flex;gap:6px;margin-top:8px">'+parts.join('')+'</div>';
+      var c=(l.stage>=2?l.stage:2), parts=[];
+      if(c>2) parts.push('<button class="btn btn-secondary btn-sm" onclick="CRM.lmSetDealStage(\''+l.id+'\','+(c-1)+')">← '+esc(L_STAGES[c-1].label)+'</button>');
+      if(c<7) parts.push('<button class="btn btn-primary btn-sm" onclick="CRM.lmSetDealStage(\''+l.id+'\','+(c+1)+')">'+esc(L_STAGES[c+1].label)+' →</button>');
+      ctl='<div style="display:flex;gap:6px;margin-top:10px">'+parts.join('')+'</div>';
+    } else if(!l.assignedTo){
+      ctl='<div class="cell-sub" style="margin-top:8px">Deal stages open once the lead is accepted (claimed or assigned to a rep).</div>';
     }
-    return '<div class="l-qsec">Deal stage</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+chips+'</div>'+ctl;
+    return '<div class="l-qsec">Deal progress</div><div class="l-stepper">'+steps+'</div>'+ctl;
+  }
+  /* Activity timeline — lifecycle events (from timestamps already fetched) merged with the
+     handoff_log thread (return / requeue / note / call), newest-first, + an inline composer. */
+  function lmActivityHtml(l){
+    var evs=[];
+    if(l.capturedAt) evs.push({at:l.capturedAt,title:'Captured via '+esc(lmSourceLabel(l.source)),who:''});
+    if(l.qualifiedAt) evs.push({at:l.qualifiedAt,title:'Qualified',who:''});
+    if(l.assignedAt && l.assignedRegion) evs.push({at:l.assignedAt,title:'Assigned to '+esc(lmRegionName(l.assignedRegion)||l.assignedRegion),who:l.assignedByName?'by '+esc(l.assignedByName):''});
+    (l.thread||[]).forEach(function(e){
+      var map={return:'Returned to marketing',requeue:'Re-queued to marketing',note:'Note',call:'Call logged',meeting:'Meeting logged'};
+      evs.push({at:e.at,title:map[e.kind]||'Update',who:e.byName?esc(e.byName):(e.kind==='return'?'Sales':(e.kind==='requeue'?'Marketing':'')),note:e.note||''});
+    });
+    evs.sort(function(a,b){ return (b.at||'').localeCompare(a.at||''); });
+    var rows=evs.map(function(e){
+      return '<div class="l-ev"><span class="l-ev-dot"></span><div class="l-ev-b">'
+        +'<div class="l-ev-t">'+e.title+'</div>'
+        +(e.note?'<div class="l-ev-n">'+esc(e.note).replace(/\n/g,'<br>')+'</div>':'')
+        +'<div class="l-ev-m">'+[e.who,e.at?esc(lmDate(e.at)):''].filter(Boolean).join(' · ')+'</div></div></div>';
+    }).join('') || '<div class="cell-sub" style="padding:4px 0">No activity yet.</div>';
+    var composer=canEditLeadStatus()
+      ? '<div class="l-compose"><select id="lm_note_kind" class="form-select"><option value="note">Note</option><option value="call">Call</option><option value="meeting">Meeting</option></select>'
+        +'<input id="lm_note_body" class="form-input" placeholder="Add a note or log a call…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();CRM.lmNoteSave(\''+l.id+'\');}"/>'
+        +'<button class="btn btn-primary btn-sm" onclick="CRM.lmNoteSave(\''+l.id+'\')">Post</button></div>'
+      : '';
+    return '<div class="l-qsec">Activity</div>'+composer+'<div class="l-acts">'+rows+'</div>';
+  }
+  /* Append a note / call / meeting to crm_leads.handoff_log (reuse the jsonb, no schema change).
+     Read-modify-write like return/requeue; keeps the drawer open and re-renders it. */
+  function lmNoteSave(id){
+    if(!canEditLeadStatus()){ toast('<b>Not permitted</b> · you have view-only access to leads'); return; }
+    var l=lmById(id); if(!l) return;
+    var kSel=$('lm_note_kind'), bEl=$('lm_note_body');
+    var kind=(kSel&&kSel.value)||'note', txt=((bEl&&bEl.value)||'').trim();
+    if(!txt){ if(bEl) bEl.focus(); return; }
+    if(!SB){ toast('No connection.'); return; }
+    var entry={ at:new Date().toISOString(), by:(USER&&USER.id)||null, byName:(USER&&(USER.name||USER.email))||'You', kind:kind, note:txt };
+    var thread=(l.thread?l.thread.slice():[]); thread.push(entry);
+    SB.from('crm_leads').update({ handoff_log:thread, updated_at:new Date().toISOString() }).eq('id',id).then(function(res){
+      if(res&&res.error){ toast('<b>Save failed.</b> '+esc(res.error.message||'')); return; }
+      l.thread=thread; lmOpen(id); toast(kind==='call'?'Call logged.':(kind==='meeting'?'Meeting logged.':'Note added.'));
+    }).catch(function(e){ toast('<b>Save failed.</b> '+esc(String(e))); });
   }
   function lmSetDealStage(id,n){
     var l=lmById(id); if(!l) return;
@@ -2860,14 +2911,47 @@ window.CRM = (function(){
     var sec=function(t){ return '<div class="l-dsec">'+t+'</div>'; };
     var withOther=function(t,o){ return or(t)+(o?' <span class="cell-sub">· other: '+esc(o)+'</span>':''); };
     var imgBlock=function(id,label,path){ return path?'<div style="margin:4px 0 10px"><div class="cell-sub" style="margin-bottom:4px">'+label+'</div><img id="'+id+'" alt="'+label+'" style="width:100%;max-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:zoom-in;display:none" onclick="if(this.src)window.open(this.src,\'_blank\')"/><div class="cell-sub" id="'+id+'note">Loading…</div></div>':''; };
-    var photos=imgBlock('lmdet_img','Business card / badge',l.cardPath)+imgBlock('lmdet_gimg','Group photo with the lead',l.groupPath);
+    /* card photo moves into the hero (keeps the #lmdet_img id so the signed-URL fetch below still fills it);
+       the group photo stays in the Photos section (#lmdet_gimg). */
+    var photos=imgBlock('lmdet_gimg','Group photo with the lead',l.groupPath);
     var fu=(rp.follow_ups&&rp.follow_ups.length)?rp.follow_ups.map(function(k){return fuMap[k]||k;}):[];
-    var body='<div class="l-form"><div class="l-qhdr">'+esc(l.company)+'</div>'
+    /* ── build the action set first so the sticky bar can sit under the hero ── */
+    var acts=[];
+    acts.push('<button class="btn btn-secondary" onclick="CRM.lmEnrichOpen(\''+l.id+'\')">Enrich</button>');
+    if(lmIsCaptured(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmQualify(\''+l.id+'\')">Qualify</button>');
+    if(lmIsQualified(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmAssignOpen(\''+l.id+'\')">Assign to region…</button>');
+    if(lmIsUnclaimed(l)){
+      var uMode=lmRoutingOf(l.assignedRegion), uMgr=lmIsManagerOf(l.assignedRegion);
+      if(uMode==='claim') acts.push('<button class="btn btn-primary" onclick="CRM.lmClaim(\''+l.id+'\')">Claim (assign to me)</button>');
+      if(uMgr) acts.push('<button class="btn btn-'+(uMode==='assign'?'primary':'secondary')+'" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to member…</button>');
+    }
+    if(lmIsAssigned(l) && l.assignedTo && lmIsManagerOf(l.assignedRegion)) acts.push('<button class="btn btn-secondary" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Re-assign</button>');
+    if(lmIsReturned(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmRequeueOpen(\''+l.id+'\')">Re-queue</button>');
+    if(!lmIsReturned(l)) acts.push('<button class="btn btn-secondary" onclick="CRM.lmReturnOpen(\''+l.id+'\')">Return to marketing</button>');
+    /* ── hero: photo-forward + company + contact + status/region/product chips + provenance strip ── */
+    var mono=esc(((l.company||'?').trim().charAt(0)||'?').toUpperCase());
+    var heroPhoto=l.cardPath
+      ? '<div class="l-hero-photo"><img id="lmdet_img" alt="Business card / badge" style="display:none" onclick="if(this.src)window.open(this.src,\'_blank\')"/><div class="cell-sub" id="lmdet_imgnote">Loading…</div><span class="l-hero-badge">'+esc(lmSourceLabel(l.source))+'</span></div>'
+      : '<div class="l-hero-photo l-hero-mono"><span>'+mono+'</span><span class="l-hero-badge">'+esc(lmSourceLabel(l.source))+'</span></div>';
+    var heroStatus=lmIsUnclaimed(l)
+      ? '<span class="l-hero-status">Unclaimed · '+(lmRoutingOf(l.assignedRegion)==='assign'?'Assign':'Claim')+'</span>'
+      : lmStageBadge(l);
+    var heroChips=heroStatus
+      +(l.assignedRegion?bdg('badge-n',lmRegionName(l.assignedRegion)):'')
+      +(l.product&&l.product!=='—'?bdg('badge-n',l.product):'')
+      +(l.band?bdg('badge-n',esc(l.band)):'');
+    var prov='Source: '+esc(lmSourceLabel(l.source))+(l.campaign?' · Campaign: '+esc(l.campaign):'')+' · captured '+esc(l.age||lmAge(l.capturedAt));
+    var hero='<div class="l-hero">'+heroPhoto
+      +'<div class="l-hero-main"><div class="l-hero-co">'+esc(l.company)+'</div>'
+      +(l.contact?'<div class="l-hero-sub">'+esc(l.contact)+(l.role?' · '+esc(l.role):'')+'</div>':'')
+      +'<div class="l-hero-chips">'+heroChips+'</div>'
+      +'<div class="l-hero-prov">'+prov+' · <span class="lot">'+esc(l.ref)+'</span></div></div></div>';
+    var actbar='<div class="l-actbar">'+acts.join('')+'</div>';
+    var body='<div class="l-form l-detail">'+hero+actbar
       +sec('Identity')
       +row('Lead','<span class="lot">'+esc(l.ref)+'</span>')
       +row('Stage',lmStageBadge(l))
       +(l.disposition==='returned'?row('Returned',esc(l.returnReason||'—')+(l.returnedAt?' · '+esc(lmDate(l.returnedAt)):'')):'')
-      +row('Company',or(l.company))
       +row('Country · region',or(l.country)+' · '+(l.assignedRegion?esc(lmRegionName(l.assignedRegion)):'<span class="cell-sub">unassigned</span>'))
       +(lmIsAssigned(l)?row('Owner',l.assignedTo?((lmIsMine(l)?'You':esc(l.assignedToName||'Another rep'))+(l.assignedByName?' <span class="cell-sub">· by '+esc(l.assignedByName)+'</span>':'')):'<span class="cell-sub">Unclaimed · in the region inbox</span>'):'')
       +row('Contact · role',or(l.contact)+(l.role?' · '+esc(l.role):''))
@@ -2894,25 +2978,14 @@ window.CRM = (function(){
       +sec('Notes')
       +row('Notes',l.notes?esc(l.notes).replace(/\n/g,'<br>'):'<span class="cell-sub">—</span>')
       +sec('Photos / files')
-      +(photos||row('Uploaded','<span class="cell-sub">none</span>'))
+      +(l.cardPath?row('Business card / badge','<span class="cell-sub">shown above</span>'):'')
+      +(photos||(!l.cardPath?row('Uploaded','<span class="cell-sub">none</span>'):''))
       +sec('Provenance')
       +row('Source · campaign',or(lmSourceLabel(l.source))+(l.campaign?' · '+esc(l.campaign):''))
       +row('Captured',or(lmDate(l.capturedAt))+' · '+esc(l.age))
       +lmDealStepperHtml(l)
-      +lmThreadHtml(l);
-    var acts=[];
-    acts.push('<button class="btn btn-secondary" onclick="CRM.lmEnrichOpen(\''+l.id+'\')">Enrich</button>');
-    if(lmIsCaptured(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmQualify(\''+l.id+'\')">Qualify</button>');
-    if(lmIsQualified(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmAssignOpen(\''+l.id+'\')">Assign to region…</button>');
-    if(lmIsUnclaimed(l)){
-      var uMode=lmRoutingOf(l.assignedRegion), uMgr=lmIsManagerOf(l.assignedRegion);
-      if(uMode==='claim') acts.push('<button class="btn btn-primary" onclick="CRM.lmClaim(\''+l.id+'\')">Claim (assign to me)</button>');
-      if(uMgr) acts.push('<button class="btn btn-'+(uMode==='assign'?'primary':'secondary')+'" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to member…</button>');
-    }
-    if(lmIsAssigned(l) && l.assignedTo && lmIsManagerOf(l.assignedRegion)) acts.push('<button class="btn btn-secondary" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Re-assign</button>');
-    if(lmIsReturned(l)) acts.push('<button class="btn btn-primary" onclick="CRM.lmRequeueOpen(\''+l.id+'\')">Re-queue</button>');
-    if(!lmIsReturned(l)) acts.push('<button class="btn btn-secondary" onclick="CRM.lmReturnOpen(\''+l.id+'\')">Return to marketing</button>');
-    body+='<div class="l-formact">'+acts.join('')+'<button class="btn btn-secondary" onclick="CRM.closeDlv()">Close</button></div></div>';
+      +lmActivityHtml(l);
+    body+='<div class="l-formact"><button class="btn btn-secondary" onclick="CRM.closeDlv()">Close</button></div></div>';
     showDlv('Lead',body);
     /* fetch a signed URL for the stored business-card photo (private bucket) */
     if(l.cardPath && SB){
@@ -3295,15 +3368,15 @@ window.CRM = (function(){
     return {state:'live', day:n, total:total};
   }
   function capBootstrap(){
-    if(CAP.loaded){ capSync(); return; }
+    if(CAP.loaded){ capSync(); capSyncCards(); return; }
     CAP.loaded=true;
     /* Eager preload the self-hosted capture libs the moment Show Mode mounts — while the rep still
        likely has signal — instead of at first Scan/Photo tap. Warms the SW cache for offline use. */
     try{ capLoadScript('lib/jsQR.js').catch(function(){}); capLoadScript('lib/qrcode.min.js').catch(function(){}); capLoadScript('lib/tesseract.min.js').catch(function(){}); }catch(e){}
-    capLoadQueue().then(function(items){ CAP.items=items.sort(function(a,b){return (b.captured_at||'').localeCompare(a.captured_at||'');}); capRenderList(); capRenderHead(); capSync(); }).catch(function(){});
+    capLoadQueue().then(function(items){ CAP.items=items.sort(function(a,b){return (b.captured_at||'').localeCompare(a.captured_at||'');}); capRenderList(); capRenderHead(); capSync(); capSyncCards(); }).catch(function(){});
     if(SB) SB.from('crm_campaigns').select('id,name,type,active,public_token,start_date,end_date').eq('active',true).order('created_at',{ascending:false}).then(function(res){ if(res&&!res.error){ CAP.campaigns=res.data||[]; if(!CAP.campaignId && CAP.campaigns.length) CAP.campaignId=capDefaultCampaign(CAP.campaigns); capRenderHead(); capLoadCampaign(); } }).catch(function(){});
-    try{ window.addEventListener('online',function(){ CAP.online=true; capRenderHead(); capSync(); capSyncDirty(); capLoadCampaign(); }); window.addEventListener('offline',function(){ CAP.online=false; capRenderHead(); }); }catch(e){}
-    if(!CAP._timer) CAP._timer=setInterval(function(){ if(CAP.online && capIsActive()){ if(capPending().length) capSync(); capSyncDirty(); capLoadCampaign(); } },20000);
+    try{ window.addEventListener('online',function(){ CAP.online=true; capRenderHead(); capSync(); capSyncDirty(); capSyncCards(); capLoadCampaign(); }); window.addEventListener('offline',function(){ CAP.online=false; capRenderHead(); }); }catch(e){}
+    if(!CAP._timer) CAP._timer=setInterval(function(){ if(CAP.online && capIsActive()){ if(capPending().length) capSync(); capSyncDirty(); capSyncCards(); capLoadCampaign(); } },20000);
     /* slide the sticky Save bar out of the way while a capture field is focused (keyboard up) so it never covers what you're typing */
     if(!CAP._kbBound){ CAP._kbBound=true;
       var isField=function(t){ return t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && t.closest && t.closest('.lead-portal'); };
@@ -3407,6 +3480,23 @@ window.CRM = (function(){
         return SB.from('crm_leads').update(upd).eq('client_uuid',r.client_uuid).then(function(res){
           if(res && !res.error){ r._dirty=false; capPut(r); }
         });
+      }).then(function(){ capRenderList(); capLoadCampaign(); }).catch(function(){});
+    });
+  }
+
+  /* Recover a photo that was captured but never reached the bucket — e.g. an upload that failed
+     before the marketing→bucket RLS was fixed, or a transient error. capSync handles only un-synced
+     rows and capSyncDirty only _dirty rows, so a SYNCED row whose card upload failed is otherwise
+     stranded forever with the photo only in this device's IndexedDB. This retries the upload and,
+     on success, writes the storage path onto the cloud row. Runs on load / reconnect / the poll. */
+  function capSyncCards(){
+    if(!CAP.online || !SB) return;
+    var stuck=CAP.items.filter(function(r){ return r._synced && ((r._card_data && !r.card_image_path) || (r._group_data && !r.group_image_path)); });
+    if(!stuck.length) return;
+    stuck.forEach(function(r){
+      Promise.all([capUploadCard(r),capUploadGroup(r)]).then(function(){
+        if(!r.card_image_path && !r.group_image_path) return;   /* still failed — leave for the next pass */
+        return SB.from('crm_leads').update({ card_image_path:r.card_image_path||null, group_image_path:r.group_image_path||null }).eq('client_uuid',r.client_uuid).then(function(res){ if(res && !res.error){ capPut(r); } });
       }).then(function(){ capRenderList(); capLoadCampaign(); }).catch(function(){});
     });
   }
@@ -4082,41 +4172,74 @@ window.CRM = (function(){
     var m=LM.myRegions||{}, ks=Object.keys(m);
     return ks.length?ks.map(function(s){return lmRegionName(s);}).join(' · '):'no region assigned';
   }
+  /* One consolidated inbox card: company anchor + region tag + wait-age + a single
+     status pill (state · routing); a plain middot metadata line replaces the chip row;
+     ref + "routed by" sit quiet in the footer beside the actions. */
+  function inboxCard(l){
+    var region=l.assignedRegion, mode=lmRoutingOf(region), mgr=lmIsManagerOf(region);
+    var days=lmDays(l.assignedAt), hot=days>=3;
+    var status='<span class="inb-status '+(mode==='assign'?'':'claim')+'">Unclaimed · '+(mode==='assign'?'Assign':'Claim')+'</span>';
+    var age='<span class="inb-age'+(hot?' hot':'')+'">waited '+lmWaited(l.assignedAt)+'</span>';
+    /* metadata line: contact (emphasised) · product · source · campaign */
+    var meta=[];
+    if(l.contact) meta.push('<span class="wname">'+esc(l.contact)+(l.role?' · '+esc(l.role):'')+'</span>');
+    if(l.product&&l.product!=='—') meta.push(esc(l.product));
+    if(l.band) meta.push(esc(l.band));
+    meta.push('Source: '+esc(lmSourceLabel(l.source)));
+    if(l.campaign) meta.push('Campaign: '+esc(l.campaign));
+    var acts;
+    if(mode==='assign'){
+      acts=mgr
+        ? '<button class="btn btn-primary btn-sm" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to member ▾</button>'
+        : '<span class="pchip mut" style="padding:5px 10px">Awaiting your manager</span>';
+    } else {
+      acts='<button class="btn btn-primary btn-sm" onclick="CRM.lmClaim(\''+l.id+'\')">Claim &amp; own</button>';
+      if(mgr) acts+='<button class="btn btn-secondary btn-sm" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to…</button>';
+    }
+    var openBtn='<button class="btn btn-secondary btn-sm" onclick="CRM.lmOpen(\''+l.id+'\')">Open lead</button>';
+    var routedBy=l.assignedByName?' · routed by '+esc(l.assignedByName):'';
+    return '<div class="inb inb-lead">'
+      +'<div class="inb-h"><span class="inb-t">'+esc(l.company)+'</span>'
+        +'<span class="rgtag">'+esc(lmRegionName(region)||'—')+'</span>'+age
+        +'<span style="margin-left:auto">'+status+'</span></div>'
+      +'<div class="inb-meta">'+meta.join('<span class="dot">·</span>')+'</div>'
+      +'<div class="inb-f"><span class="inb-ref"><span class="lot">'+esc(l.ref)+'</span>'+routedBy+'</span>'
+        +'<span class="gset" style="margin-left:auto;margin-top:0">'+openBtn+acts+'</span></div></div>';
+  }
   function paneInbox(){
     if(!LM.loaded){ lmEnsure(); return lmSkel(); }
     var list=inboxList();
-    var cards=list.map(function(l){
-      var region=l.assignedRegion, mode=lmRoutingOf(region), mgr=lmIsManagerOf(region);
-      var chips=[];
-      chips.push(bdg('badge-n',lmRegionName(region)||'—'));
-      if(l.contact) chips.push(bdg('badge-pass',l.contact+(l.role?' · '+l.role:'')));
-      if(l.product&&l.product!=='—') chips.push(bdg('badge-n',l.product));
-      if(l.band) chips.push(bdg('badge-n',esc(l.band)));
-      chips.push(bdg('badge-n',lmSourceLabel(l.source)));
-      if(l.campaign) chips.push(bdg('badge-n',l.campaign));
-      var routeChip='<span class="pchip '+(mode==='assign'?'ok':'mut')+'" title="region routing">Routing: '+(mode==='assign'?'Assign':'Claim')+'</span>';
-      var acts;
-      if(mode==='assign'){
-        acts=mgr
-          ? '<button class="btn btn-primary btn-sm" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to member ▾</button>'
-          : '<span class="pchip mut" style="padding:5px 10px">Awaiting assignment from your manager</span>';
-      } else {
-        acts='<button class="btn btn-primary btn-sm" onclick="CRM.lmClaim(\''+l.id+'\')">Claim &amp; own</button>';
-        if(mgr) acts+='<button class="btn btn-secondary btn-sm" onclick="CRM.lmAssignMemberOpen(\''+l.id+'\')">Assign to…</button>';
-      }
-      acts+='<button class="btn btn-secondary btn-sm" onclick="CRM.lmOpen(\''+l.id+'\')">Open lead</button>';
-      return '<div class="inb"><div class="inb-h"><span class="lot">'+esc(l.ref)+'</span><span class="inb-t">'+esc(l.company)+'</span>'
-        +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center">'+routeChip+bdg('badge-warn','unclaimed')+'</span></div>'
-        +'<div class="chips">'+chips.join('')+'</div>'
-        +'<div class="gset">'+acts+'</div></div>';
-    }).join('');
+    /* queue-health header — honest, all computed from the loaded rows */
+    var oldest=list.reduce(function(m,l){ return lmDays(l.assignedAt)>lmDays(m&&m.assignedAt)?l:m; }, list[0]||null);
+    var aging=list.filter(function(l){ return lmDays(l.assignedAt)>=3; }).length;
+    var kpis=kpiStrip([
+      ['Unclaimed',String(list.length),'in your region(s)'],
+      ['Oldest waiting',oldest?lmWaited(oldest.assignedAt):'—',oldest?esc(oldest.company):'nothing waiting'],
+      ['Aging 3d+',String(aging),aging?'needs attention':'all fresh']
+    ]);
+    /* By region when there's more than one region in view (admins, multi-region managers);
+       a single-region rep sees a flat list. */
+    var byRegion={}, order=[];
+    list.forEach(function(l){ var r=l.assignedRegion||'—'; if(!byRegion[r]){ byRegion[r]=[]; order.push(r); } byRegion[r].push(l); });
+    var grouped=order.length>1, cards;
+    if(grouped){
+      order.sort(function(a,b){ return (lmRegionName(a)||a).localeCompare(lmRegionName(b)||b); });
+      cards=order.map(function(r){
+        var g=byRegion[r], mode=lmRoutingOf(r), old=g.reduce(function(m,l){ return lmDays(l.assignedAt)>lmDays(m&&m.assignedAt)?l:m; },g[0]);
+        return '<div class="inb-rghdr"><span class="rn">'+esc(lmRegionName(r)||r)+'</span>'
+          +'<span class="route '+(mode==='assign'?'assign':'claim')+'">'+(mode==='assign'?'Assign':'Claim')+'</span>'
+          +'<span class="line"></span><span class="cnt">'+g.length+' unclaimed · oldest '+lmWaited(old.assignedAt)+'</span></div>'
+          +g.map(inboxCard).join('');
+      }).join('');
+    } else {
+      cards=list.map(inboxCard).join('');
+    }
     var emptyMsg=(!IS_ADMIN && !Object.keys(LM.myRegions||{}).length)
       ? 'You have no CRM region assigned yet — an admin can grant one under Admin → Users → Region access.'
       : 'No unclaimed leads in your region(s). Marketing qualifies a lead, then <b>Assign to region</b> to route it here.';
     return '<div class="card"><div class="section-title"><span class="section-title-bar"></span> Lead inbox · '+esc(lmInboxScopeLabel())+' · '+list.length+' unclaimed'
       +' <span style="margin-left:auto"><button class="btn btn-secondary btn-sm" onclick="CRM.lmRefresh(this)">↻ Refresh</button></span></div>'
-      +'<div class="alert-warn" style="margin-bottom:12px">Leads assigned to your region, waiting for an owner. In <strong>Claim</strong> regions a rep takes ownership from here; in <strong>Assign</strong> regions a manager assigns each lead to a member. Routing is set per region under Setup → Region rules.</div>'
-      +(list.length?cards:'<div class="empty-state">'+emptyMsg+'</div>')+'</div>';
+      +(list.length?kpis+cards:'<div class="empty-state">'+emptyMsg+'</div>')+'</div>';
   }
   /* True when the user manages ≥1 region (admins always). Managers get the team pipeline. */
   function lmIsPipelineManager(){ return IS_ADMIN || !!(LM.myManagerRegions && Object.keys(LM.myManagerRegions).length); }
@@ -4152,10 +4275,10 @@ window.CRM = (function(){
       return '<tr onclick="CRM.lmOpen(\''+l.id+'\')"><td><span class="lot">'+esc(l.ref)+'</span></td><td>'+esc(l.company)+'</td>'
         +'<td>'+owner+byline+'</td>'
         +'<td>'+(l.assignedRegion?bdg('badge-n',lmRegionName(l.assignedRegion)):'—')+'</td>'
-        +'<td>'+esc(l.product)+'</td><td>'+(l.campaign?esc(l.campaign):'<span class="cell-sub">—</span>')+'</td><td>'+lmStageBadge(l)+'</td><td class="mono">'+esc(lmDate(l.assignedAt||l.capturedAt))+'</td>'
+        +'<td>'+esc(l.product)+'</td><td>'+(l.campaign?esc(l.campaign):'<span class="cell-sub">—</span>')+'</td><td>'+lmStageBadge(l)+'</td><td class="mono">'+esc(lmDate(l.assignedAt||l.capturedAt))+'</td><td class="mono">'+lmWaited(l.assignedAt||l.capturedAt)+'</td>'
         +'<td onclick="event.stopPropagation()">'+(reassign||'<span class="cell-sub">—</span>')+'</td></tr>';
     }).join('');
-    if(!shown.length) rows='<tr><td colspan="9" class="cell-sub" style="padding:16px;text-align:center">'+(mgr?'No leads assigned in your region(s) yet — assign one from the Lead inbox.':'Nothing claimed yet. <b>Claim</b> a region-assigned lead from the Lead inbox to add it here.')+'</td></tr>';
+    if(!shown.length) rows='<tr><td colspan="10" class="cell-sub" style="padding:16px;text-align:center">'+(mgr?'No leads assigned in your region(s) yet — assign one from the Lead inbox.':'Nothing claimed yet. <b>Claim</b> a region-assigned lead from the Lead inbox to add it here.')+'</td></tr>';
     /* assignment filter — managers only (a rep only ever sees themselves) */
     var asgKeys=Object.keys(asg);
     var filterSel=mgr?'<select class="form-select" style="width:auto" onchange="CRM.lmSetPipeAsg(this.value)">'
@@ -4166,7 +4289,7 @@ window.CRM = (function(){
     var title=mgr?('Team pipeline · '+shown.length+(fil==='all'?'':' of '+full.length)+' lead(s)'):('My pipeline · '+shown.length+' lead(s) assigned to me');
     return '<div class="card"><div class="section-title"><span class="section-title-bar"></span> '+title
       +' <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center">'+filterSel+'<button class="btn btn-secondary btn-sm" onclick="CRM.lmRefresh(this)">↻ Refresh</button></span></div>'
-      +'<div class="table-wrap"><table><thead><tr><th>Lead</th><th>Company</th><th>Assigned to</th><th>Region</th><th>Product</th><th>Campaign</th><th>Stage</th><th>Assigned</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+      +'<div class="table-wrap"><table><thead><tr><th>Lead</th><th>Company</th><th>Assigned to</th><th>Region</th><th>Product</th><th>Campaign</th><th>Stage</th><th>Assigned</th><th>Age</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
   }
 
   /* ═══════════════════ FUNNEL destination ═══════════════════ */
@@ -4801,7 +4924,7 @@ window.CRM = (function(){
     lmAssignMemberOpen:lmAssignMemberOpen, lmMemberPick:lmMemberPick, lmAssignMemberSave:lmAssignMemberSave, lmReleaseMember:lmReleaseMember,
     lmRefresh:lmRefresh, lmOpen:lmOpen, lmEnrichOpen:lmEnrichOpen, lmEnrichSave:gm(lmEnrichSave), lmEnrichChip:lmEnrichChip,
     lmQualify:gm(lmQualify), lmAssignOpen:lmAssignOpen, lmPickRegion:lmPickRegion, lmAssignSave:gm(lmAssignSave),
-    lmReturnOpen:lmReturnOpen, lmReturnPick:lmReturnPick, lmReturnSave:gs(lmReturnSave), lmRequeueOpen:lmRequeueOpen, lmRequeueSave:gs(lmRequeueSave), lmClaim:gs(lmClaim), lmSetDealStage:lmSetDealStage, lmSearch:lmSearch, lmSetF:lmSetF, lmSetPipeAsg:lmSetPipeAsg,
+    lmReturnOpen:lmReturnOpen, lmReturnPick:lmReturnPick, lmReturnSave:gs(lmReturnSave), lmRequeueOpen:lmRequeueOpen, lmRequeueSave:gs(lmRequeueSave), lmClaim:gs(lmClaim), lmSetDealStage:lmSetDealStage, lmNoteSave:gs(lmNoteSave), lmSearch:lmSearch, lmSetF:lmSetF, lmSetPipeAsg:lmSetPipeAsg,
     leadInboxCount:function(){ try{ lmEnsure(); return LM.loaded?inboxList().length:0; }catch(e){ return 0; } },
     leadSub:leadSub, leadNav:leadNav, leadSet:leadSet, leadReset:leadReset, leadOpen:leadOpen,
     leadQuickAdd:leadQuickAdd, leadSubmitQuickAdd:gm(leadSubmitQuickAdd), leadEnrich:gm(leadEnrich),
@@ -4861,7 +4984,8 @@ function injectCrmCss(){
 .crmv .season-box-lbl{font-size:9px;color:var(--sidebar-muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px}
 .crmv .season-box select{font-size:12px;font-weight:700;color:#fff;background:transparent;border:none;outline:none;cursor:pointer;font-family:var(--font-body);padding:0;width:100%}
 .crmv .season-box select option{color:var(--text)}
-.crmv .nav-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--sidebar-muted);padding:12px 18px 5px;font-weight:600}
+.crmv .nav-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#b3aac7;padding:13px 18px 5px;font-weight:600;border-top:1px solid rgba(255,255,255,.06);margin-top:6px}
+.crmv .nav-label.nav-sublabel{border-top:none;margin-top:1px;padding:6px 18px 3px 30px;font-size:9px;letter-spacing:.13em;color:var(--sidebar-muted);opacity:.85}
 .crmv .nav-item{display:flex;align-items:center;gap:9px;padding:8px 18px;font-size:13px;color:var(--sidebar-text);cursor:pointer;transition:.15s}
 .crmv .nav-item svg{width:14px;height:14px;opacity:.65;flex-shrink:0}
 .crmv .nav-item:hover{background:var(--sidebar2)}
@@ -5375,6 +5499,43 @@ function injectCrmCss(){
 .crmv .l-formnote{font-size:12px;color:var(--text3);line-height:1.45;margin-bottom:10px}
 .crmv .l-formact{display:flex;gap:8px;margin-top:16px}
 .crmv .l-qhdr{font-family:var(--font-display);font-size:18px;margin-bottom:6px}
+/* lead-detail drawer redesign: hero + sticky action bar */
+.crmv .l-detail .l-hero{display:flex;gap:14px;padding:2px 0 12px}
+.crmv .l-hero-photo{position:relative;flex:0 0 92px;width:92px;height:115px}
+.crmv .l-hero-photo img{width:92px;height:115px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:zoom-in;display:block}
+.crmv .l-hero-photo .cell-sub{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid var(--border);border-radius:10px;background:var(--card);font-size:10px;padding:4px}
+.crmv .l-hero-mono{display:flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:10px;background:linear-gradient(150deg,var(--card),var(--bg2))}
+.crmv .l-hero-mono>span:first-child{font-family:var(--font-display);font-size:44px;color:var(--accent);line-height:1}
+.crmv .l-hero-badge{position:absolute;left:6px;bottom:6px;font-size:9px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;background:rgba(34,31,43,.72);color:#fff;border-radius:5px;padding:2px 6px}
+.crmv .l-hero-status{font-size:11px;font-weight:700;letter-spacing:.01em;padding:2px 10px;border-radius:20px;white-space:nowrap;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border)}
+.crmv .l-detail .l-drow{display:grid;grid-template-columns:150px 1fr;gap:12px;align-items:baseline}
+.crmv .l-detail .l-drow>span:last-child{text-align:left}
+.crmv .l-detail .l-drow>span:first-child{color:var(--text3)}
+/* deal-progress stepper */
+.crmv .l-stepper{display:flex;align-items:center;flex-wrap:wrap;gap:4px 0}
+.crmv .l-step{font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;background:var(--card);border:1px solid var(--border2);color:var(--text3)}
+.crmv .l-step.done{background:var(--green-bg);color:var(--green);border-color:transparent}
+.crmv .l-step.now{background:var(--accent);color:#fff;border-color:transparent}
+.crmv .l-stepbar{width:12px;height:2px;background:var(--border);margin:0 2px;flex:0 0 auto}
+.crmv .l-stepbar.done{background:var(--green)}
+/* activity timeline + composer */
+.crmv .l-compose{display:flex;gap:6px;margin-bottom:12px}
+.crmv .l-compose .form-select{width:auto;flex:0 0 auto}
+.crmv .l-compose .form-input{flex:1;min-width:0}
+.crmv .l-acts{display:flex;flex-direction:column}
+.crmv .l-ev{display:flex;gap:11px;padding:9px 0}
+.crmv .l-ev+.l-ev{border-top:1px solid var(--border)}
+.crmv .l-ev-dot{flex:0 0 8px;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-top:5px}
+.crmv .l-ev-b{min-width:0;flex:1}
+.crmv .l-ev-t{font-size:13px;color:var(--text2);font-weight:500}
+.crmv .l-ev-n{font-size:12.5px;color:var(--text);margin-top:2px;line-height:1.45}
+.crmv .l-ev-m{font-size:11px;color:var(--text3);margin-top:2px}
+.crmv .l-hero-main{min-width:0;flex:1}
+.crmv .l-hero-co{font-family:var(--font-display);font-size:22px;line-height:1.08;color:var(--text)}
+.crmv .l-hero-sub{font-size:13px;color:var(--text2);font-weight:600;margin-top:2px}
+.crmv .l-hero-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+.crmv .l-hero-prov{font-size:11.5px;color:var(--text3);margin-top:9px;line-height:1.5}
+.crmv .l-detail .l-actbar{position:sticky;top:0;z-index:3;display:flex;gap:8px;flex-wrap:wrap;margin:0 -16px 6px;padding:11px 16px;background:var(--bg);border-top:1px solid var(--border);border-bottom:1px solid var(--border);box-shadow:0 5px 12px -9px rgba(0,0,0,.4)}
 .crmv .l-qsec{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin:14px 0 8px}
 .crmv .l-qgate{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
 .crmv .l-qgate>div:first-child{font-size:13px;color:var(--text2)}
@@ -5458,6 +5619,27 @@ function injectCrmCss(){
 .crmv .inb-h{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .crmv .inb-t{font-size:14px;font-weight:600;color:var(--text)}
 .crmv .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;margin-bottom:2px}
+/* consolidated inbox lead card (quick-wins redesign) */
+.crmv .inb-lead{position:relative;padding:13px 15px 12px 16px;overflow:hidden}
+.crmv .inb-lead::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.crmv .inb-lead .inb-t{font-family:var(--font-display,var(--font-body));font-size:18px;font-weight:400;line-height:1.15}
+.crmv .rgtag{font-size:11px;font-weight:600;color:var(--text2);border:1px solid var(--border2);border-radius:6px;padding:1px 8px}
+.crmv .inb-age{font-size:11px;font-weight:600;color:var(--text3);white-space:nowrap}
+.crmv .inb-age.hot{color:var(--red)}
+.crmv .inb-status{font-size:11px;font-weight:700;letter-spacing:.01em;padding:3px 10px;border-radius:20px;white-space:nowrap;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border)}
+.crmv .inb-meta{margin-top:7px;font-size:12.5px;color:var(--text3);line-height:1.5}
+.crmv .inb-meta .wname{color:var(--text2);font-weight:600}
+.crmv .inb-meta .dot{color:var(--border);margin:0 7px}
+.crmv .inb-f{display:flex;align-items:center;margin-top:11px;padding-top:9px;border-top:1px solid var(--border)}
+.crmv .inb-ref{font-size:11px;color:var(--text3)}
+.crmv .inb-ref .lot{color:var(--text3)}
+.crmv .inb-rghdr{display:flex;align-items:center;gap:10px;margin:18px 2px 9px}
+.crmv .inb-rghdr .rn{font-family:var(--font-display,var(--font-body));font-size:15px;font-weight:400;color:var(--text)}
+.crmv .inb-rghdr .route{font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:2px 9px;border-radius:20px;background:var(--bg2);color:var(--text2)}
+.crmv .inb-rghdr .route.assign{background:var(--accent-soft,var(--bg2));color:var(--accent)}
+.crmv .inb-rghdr .route.claim{background:var(--green-bg);color:var(--green)}
+.crmv .inb-rghdr .line{flex:1;height:1px;background:var(--border)}
+.crmv .inb-rghdr .cnt{font-family:var(--font-mono);font-size:11.5px;color:var(--text3)}
 /* bulk bar */
 .crmv .bulkbar{display:none;align-items:center;gap:7px;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:7px 10px;margin-bottom:10px;font-size:12px;color:var(--text2)}
 .crmv .bulkbar.on{display:flex}
