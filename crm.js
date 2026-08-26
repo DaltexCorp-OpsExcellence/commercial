@@ -2919,7 +2919,7 @@ window.CRM = (function(){
     var or=function(v){ return (v==null||v===''||(Array.isArray(v)&&!v.length))?'<span class="cell-sub">—</span>':esc(Array.isArray(v)?v.join(', '):String(v)); };
     var sec=function(t){ return '<div class="l-dsec">'+t+'</div>'; };
     var withOther=function(t,o){ return or(t)+(o?' <span class="cell-sub">· other: '+esc(o)+'</span>':''); };
-    var imgBlock=function(id,label,path){ return path?'<div style="margin:4px 0 10px"><div class="cell-sub" style="margin-bottom:4px">'+label+'</div><img id="'+id+'" alt="'+label+'" style="width:100%;max-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:zoom-in;display:none" onclick="if(this.src)window.open(this.src,\'_blank\')"/><div class="cell-sub" id="'+id+'note">Loading…</div></div>':''; };
+    var imgBlock=function(id,label,path){ return path?'<div style="margin:4px 0 10px"><div class="cell-sub" style="margin-bottom:4px">'+label+'</div><img id="'+id+'" alt="'+label+'" style="width:100%;max-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:zoom-in;display:none" onclick="if(this.src)CRM.campLightbox(this.src)"/><div class="cell-sub" id="'+id+'note">Loading…</div></div>':''; };
     /* card photo moves into the hero (keeps the #lmdet_img id so the signed-URL fetch below still fills it);
        the group photo stays in the Photos section (#lmdet_gimg). */
     var photos=imgBlock('lmdet_gimg','Group photo with the lead',l.groupPath);
@@ -2947,7 +2947,7 @@ window.CRM = (function(){
     /* ── hero: photo-forward + company + contact + status/region/product chips + provenance strip ── */
     var mono=esc(((l.company||'?').trim().charAt(0)||'?').toUpperCase());
     var heroPhoto=l.cardPath
-      ? '<div class="l-hero-photo"><img id="lmdet_img" alt="Business card / badge" style="display:none" onclick="if(this.src)window.open(this.src,\'_blank\')"/><div class="cell-sub" id="lmdet_imgnote">Loading…</div><span class="l-hero-badge">'+esc(lmSourceLabel(l.source))+'</span></div>'
+      ? '<div class="l-hero-photo"><img id="lmdet_img" alt="Business card / badge" style="display:none" onclick="if(this.src)CRM.campLightbox(this.src)"/><div class="cell-sub" id="lmdet_imgnote">Loading…</div><span class="l-hero-badge">'+esc(lmSourceLabel(l.source))+'</span></div>'
       : '<div class="l-hero-photo l-hero-mono"><span>'+mono+'</span><span class="l-hero-badge">'+esc(lmSourceLabel(l.source))+'</span></div>';
     var heroStatus=lmIsUnclaimed(l)
       ? '<span class="l-hero-status">Unclaimed · '+(lmRoutingOf(l.assignedRegion)==='assign'?'Assign':'Claim')+'</span>'
@@ -5682,11 +5682,11 @@ function injectCrmCss(){
 .crmv .l-qhdr{font-family:var(--font-display);font-size:18px;margin-bottom:6px}
 /* lead-detail drawer redesign: hero + sticky action bar */
 .crmv .l-detail .l-hero{display:flex;gap:14px;padding:2px 0 12px}
-.crmv .l-hero-photo{position:relative;flex:0 0 92px;width:92px;height:115px}
-.crmv .l-hero-photo img{width:92px;height:115px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:zoom-in;display:block}
+.crmv .l-hero-photo{position:relative;flex:0 0 140px;width:140px;height:88px}
+.crmv .l-hero-photo img{width:140px;height:88px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:zoom-in;display:block}
 .crmv .l-hero-photo .cell-sub{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;border:1px solid var(--border);border-radius:10px;background:var(--card);font-size:10px;padding:4px}
 .crmv .l-hero-mono{display:flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:10px;background:linear-gradient(150deg,var(--card),var(--bg2))}
-.crmv .l-hero-mono>span:first-child{font-family:var(--font-display);font-size:44px;color:var(--accent);line-height:1}
+.crmv .l-hero-mono>span:first-child{font-family:var(--font-display);font-size:38px;color:var(--accent);line-height:1}
 .crmv .l-hero-badge{position:absolute;left:6px;bottom:6px;font-size:9px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;background:rgba(34,31,43,.72);color:#fff;border-radius:5px;padding:2px 6px}
 .crmv .l-hero-status{font-size:11px;font-weight:700;letter-spacing:.01em;padding:2px 10px;border-radius:20px;white-space:nowrap;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border)}
 .crmv .l-detail .l-drow{display:grid;grid-template-columns:150px 1fr;gap:12px;align-items:baseline}
