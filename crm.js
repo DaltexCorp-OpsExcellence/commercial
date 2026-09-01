@@ -2380,8 +2380,17 @@ window.CRM = (function(){
   }
 
   function attachListeners(){
-    var d=$('dlv'); if(d) d.addEventListener('click',function(e){ if(e.target===d) closeDlv(); });
-    [].forEach.call(ROOT.querySelectorAll('.modal-bg'),function(m){ m.addEventListener('click',function(e){ if(e.target===m) requestCloseModal(m.id); }); });
+    /* Close a drawer/modal on backdrop click, but ONLY when the press STARTED on the
+       backdrop. Otherwise a text-selection drag that begins inside a field and releases
+       outside the panel makes the click target the backdrop, wrongly closing the view. */
+    function bgClose(el,onClose){
+      if(!el) return;
+      var pressedOnBg=false;
+      el.addEventListener('pointerdown',function(e){ pressedOnBg=(e.target===el); });
+      el.addEventListener('click',function(e){ if(e.target===el && pressedOnBg) onClose(); });
+    }
+    bgClose($('dlv'),function(){ closeDlv(); });
+    [].forEach.call(ROOT.querySelectorAll('.modal-bg'),function(m){ bgClose(m,function(){ requestCloseModal(m.id); }); });
     /* mark guarded modals dirty on any field edit so closing them prompts before discarding (P0-1) */
     function _markDirty(e){ var m=e.target&&e.target.closest&&e.target.closest('.modal-bg'); if(m&&GUARDED_MODALS[m.id]) _formDirty[m.id]=true; }
     ROOT.addEventListener('input',_markDirty);
@@ -4678,7 +4687,7 @@ window.CRM = (function(){
       +'<div class="grid2"><div>'+dateField('camp_start','Start date',c&&c.start_date?c.start_date:'')+'</div><div>'+dateField('camp_end','End date',c&&c.end_date?c.end_date:'')+'</div></div>'
       +'<div class="grid2"><div>'+field('camp_location','Location (optional)',c&&c.location?c.location:'','e.g. Hong Kong · AsiaWorld-Expo')+'</div>'
       +'<div><label class="form-label" style="margin-top:8px">Time zone</label><select class="form-select" id="camp_tz">'+tzOpts+'</select></div></div>'
-      +'<div class="l-formhint" style="margin:-2px 0 8px">Each lead&rsquo;s day follows the event&rsquo;s time zone — so a lead captured after midnight in Hong Kong records on the new local day.</div>'
+      +'<div class="l-formhint" style="margin:-2px 0 8px">Each lead&rsquo;s day follows the event&rsquo;s time zone above — so a lead captured just after midnight local time records on the new day.</div>'
       +'<label style="display:flex;gap:9px;align-items:flex-start;margin:2px 0 8px;cursor:pointer"><input type="checkbox" id="camp_autosched"'+((!c||c.auto_schedule!==false)?' checked':'')+' style="width:auto;margin-top:2px;accent-color:var(--accent)"/><span style="font-size:12.5px;color:var(--text2)">Activate &amp; deactivate automatically by the event dates <span class="cell-sub" style="text-transform:none;letter-spacing:0">— live from the start date, closes after the end date (event-local). Uncheck to switch the link on/off manually.</span></span></label>'
       +field('camp_cost','Cost (optional)',c&&c.cost!=null?String(c.cost):'','e.g. 41200')
       +'<label class="form-label" style="margin-top:10px">Event logo (optional)</label>'
