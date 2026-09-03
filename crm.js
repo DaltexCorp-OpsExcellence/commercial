@@ -2848,9 +2848,63 @@ window.CRM = (function(){
   }
 
   /* ── New lead — REAL manual capture, mirrors Show Mode's field set + card photo, inserts crm_leads ── */
-  var LMN={products:{},cardData:null,force:false};
-  function lmNewProdChips(){ return CAP_PRODUCTS.map(function(p){ return '<button type="button" class="capchip'+(LMN.products[p]?' on':'')+'" data-prod="'+esc(p)+'" onclick="CRM.lmNewChip(this)">'+esc(p)+'</button>'; }).join(''); }
-  function lmNewChip(btn){ var p=btn.getAttribute('data-prod'); LMN.products[p]=!LMN.products[p]; btn.classList.toggle('on',!!LMN.products[p]); }
+  /* Forked option lists — New Lead only, so Show Mode's CAP_* and the public form are untouched. */
+  var LMN_IMP=['Agent','Retailer','Wholesaler','Web Shop','Factory','Horeca','Other'];
+  var LMN_EXP=['Grower','Trader','Association','Other'];
+  /* lazy — CAP_PRODUCTS is defined later in the file; computing at load time would throw */
+  function lmnProducts(){ return CAP_PRODUCTS.filter(function(p){return p!=='Other';}).concat(['Radish','Blueberry','General','Other']); }
+  var LMN_CROPS=['Fresh','Frozen','Processed'];
+  var LMN={products:{},imp:{},exp:{},crops:{},cats:{},contacts:[{name:'',role:'',phones:[''],emails:['']}],cardData:null,groupData:null,flyerData:null,force:false};
+  /* importer / exporter / crop-type tiles (all multi-select) */
+  function lmnTypeMap(k){ return k==='imp'?LMN.imp:(k==='exp'?LMN.exp:LMN.crops); }
+  function lmnTypeTiles(k){ var arr=k==='imp'?LMN_IMP:(k==='exp'?LMN_EXP:LMN_CROPS), map=lmnTypeMap(k); return arr.map(function(v){ return '<button type="button" class="opt-tile'+(map[v]?' on':'')+'" data-k="'+k+'" data-v="'+esc(v)+'" onclick="CRM.lmnType(this)"><span class="tk">✓</span>'+esc(v)+'</button>'; }).join(''); }
+  function lmnType(btn){ var k=btn.getAttribute('data-k'), v=btn.getAttribute('data-v'), map=lmnTypeMap(k); map[v]=!map[v]; btn.classList.toggle('on',!!map[v]); if((k==='imp'||k==='exp')&&v==='Other'){ var o=$('lmn_'+k+'_other'); if(o){ o.style.display=map[v]?'block':'none'; if(map[v]) o.focus(); else o.value=''; } } }
+  /* multi-contact: each contact carries a name/role + its own phone(s) & email(s) */
+  function lmnReadContacts(){ (LMN.contacts||[]).forEach(function(c,i){ var nm=$('lmnc_name_'+i); if(nm) c.name=nm.value; var rl=$('lmnc_role_'+i); if(rl) c.role=rl.value; c.phones=c.phones.map(function(_,j){ var el=$('lmnc_ph_'+i+'_'+j); return el?el.value:''; }); c.emails=c.emails.map(function(_,j){ var el=$('lmnc_em_'+i+'_'+j); return el?el.value:''; }); }); }
+  function lmnRenderContacts(){ var box=$('lmn_contacts'); if(box) box.innerHTML=lmnContactsHtml(); }
+  function lmnContactsHtml(){
+    return (LMN.contacts||[]).map(function(c,i){
+      var phones=c.phones.map(function(v,j){ return '<div class="lmnc-row"><input class="form-input" id="lmnc_ph_'+i+'_'+j+'" value="'+esc(v||'')+'" placeholder="Phone / WhatsApp" inputmode="tel"/>'+(c.phones.length>1?'<button type="button" class="lmnc-del" onclick="CRM.lmnDelPhone('+i+','+j+')" aria-label="Remove phone">×</button>':'')+'</div>'; }).join('');
+      var emails=c.emails.map(function(v,j){ return '<div class="lmnc-row"><input class="form-input" id="lmnc_em_'+i+'_'+j+'" value="'+esc(v||'')+'" placeholder="name@company.com" inputmode="email" autocapitalize="none"/>'+(c.emails.length>1?'<button type="button" class="lmnc-del" onclick="CRM.lmnDelEmail('+i+','+j+')" aria-label="Remove email">×</button>':'')+'</div>'; }).join('');
+      return '<div class="lmnc-card">'
+        +'<div class="lmnc-head"><span class="lmnc-idx">Contact '+(i+1)+'</span>'+(i===0?'<span class="cell-sub">primary</span>':'<span class="link-btn" style="margin-left:auto" onclick="CRM.lmnDelContact('+i+')">Remove</span>')+'</div>'
+        +'<div class="grid2" style="gap:8px"><input class="form-input" id="lmnc_name_'+i+'" value="'+esc(c.name||'')+'" placeholder="Full name" autocapitalize="words"/><input class="form-input" id="lmnc_role_'+i+'" value="'+esc(c.role||'')+'" placeholder="Role / title"/></div>'
+        +'<div class="lmnc-sub">Phone(s)</div><div class="lmnc-multi">'+phones+'</div><div style="margin-top:5px"><span class="link-btn" onclick="CRM.lmnAddPhone('+i+')">+ Add phone</span></div>'
+        +'<div class="lmnc-sub">Email(s)</div><div class="lmnc-multi">'+emails+'</div><div style="margin-top:5px"><span class="link-btn" onclick="CRM.lmnAddEmail('+i+')">+ Add email</span></div>'
+        +'</div>';
+    }).join('')+'<div style="margin-top:7px"><span class="link-btn" onclick="CRM.lmnAddContact()">+ Add another contact</span></div>';
+  }
+  function lmnAddContact(){ lmnReadContacts(); LMN.contacts.push({name:'',role:'',phones:[''],emails:['']}); lmnRenderContacts(); }
+  function lmnDelContact(i){ lmnReadContacts(); LMN.contacts.splice(i,1); if(!LMN.contacts.length) LMN.contacts.push({name:'',role:'',phones:[''],emails:['']}); lmnRenderContacts(); }
+  function lmnAddPhone(i){ lmnReadContacts(); LMN.contacts[i].phones.push(''); lmnRenderContacts(); }
+  function lmnDelPhone(i,j){ lmnReadContacts(); LMN.contacts[i].phones.splice(j,1); if(!LMN.contacts[i].phones.length) LMN.contacts[i].phones.push(''); lmnRenderContacts(); }
+  function lmnAddEmail(i){ lmnReadContacts(); LMN.contacts[i].emails.push(''); lmnRenderContacts(); }
+  function lmnDelEmail(i,j){ lmnReadContacts(); LMN.contacts[i].emails.splice(j,1); if(!LMN.contacts[i].emails.length) LMN.contacts[i].emails.push(''); lmnRenderContacts(); }
+  /* open-text category per selected product (products the user picked, minus 'Other') */
+  function lmnCatProducts(){ return lmnProducts().filter(function(p){ return LMN.products[p] && p!=='Other'; }); }
+  function lmnReadCats(){ var box=$('lmn_cats'); if(!box) return; var ins=box.querySelectorAll('input[data-catp]'); for(var i=0;i<ins.length;i++){ LMN.cats[ins[i].getAttribute('data-catp')]=ins[i].value; } }
+  function lmnRenderCats(){ var box=$('lmn_cats'); if(!box) return; lmnReadCats();
+    var ps=lmnCatProducts();
+    if(!ps.length){ box.innerHTML='<div class="cell-sub" style="padding:3px 0">Pick a product above to add a category.</div>'; return; }
+    box.innerHTML=ps.map(function(p){ return '<div class="lmncat-row"><div class="lmncat-p">'+esc(p)+'</div><input class="form-input" data-catp="'+esc(p)+'" value="'+esc(LMN.cats[p]||'')+'" placeholder="Category (optional)"/></div>'; }).join('');
+  }
+  /* photos — group & flyer mirror the existing card-photo handler */
+  function lmnPhotoChip(label,data,fn){ return data?'<div class="lmn-photochip"><img src="'+data+'"/><span class="cell-sub">'+label+' attached</span><span class="link-btn" style="margin-left:auto" onclick="CRM.'+fn+'()">Remove</span></div>':''; }
+  function lmNewGroupChip(){ var el=$('lmn_group_chip'); if(el) el.innerHTML=lmnPhotoChip('Group photo',LMN.groupData,'lmNewGroupRemove'); }
+  function lmNewFlyerChip(){ var el=$('lmn_flyer_chip'); if(el) el.innerHTML=lmnPhotoChip('Flyer / document',LMN.flyerData,'lmNewFlyerRemove'); }
+  function lmnPickImg(input,set){ var f=input&&input.files&&input.files[0]; if(!f) return; input.value=''; var rd=new FileReader(); rd.onload=function(ev){ var img=new Image(); img.onload=function(){ var max=1400,w=img.width,h=img.height,sc=Math.min(1,max/Math.max(w,h)); w=Math.round(w*sc); h=Math.round(h*sc); var cv=document.createElement('canvas'); cv.width=w; cv.height=h; cv.getContext('2d').drawImage(img,0,0,w,h); var d; try{ d=cv.toDataURL('image/jpeg',0.72); }catch(e){ d=ev.target.result; } set(d); }; img.onerror=function(){ set(ev.target.result); }; img.src=ev.target.result; }; rd.readAsDataURL(f); }
+  function lmNewGroupPick(input){ lmnPickImg(input,function(d){ LMN.groupData=d; lmNewGroupChip(); }); }
+  function lmNewFlyerPick(input){ lmnPickImg(input,function(d){ LMN.flyerData=d; lmNewFlyerChip(); }); }
+  function lmNewGroupRemove(){ LMN.groupData=null; lmNewGroupChip(); var fi=$('lmn_group'); if(fi) fi.value=''; }
+  function lmNewFlyerRemove(){ LMN.flyerData=null; lmNewFlyerChip(); var fi=$('lmn_flyer'); if(fi) fi.value=''; }
+  /* campaign / source picker — always shown; loads campaigns on demand (they aren't fetched until the Campaigns tab opens) */
+  function lmnCampOptions(){
+    if(!CAMP.loaded && !(CAMP.items&&CAMP.items.length)) return '<option value="">Loading campaigns…</option>';
+    var camps=(CAMP.items||[]).filter(function(c){return c.active;});
+    return '<option value="">— none · manual / walk-in —</option>'+camps.map(function(c){ return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>'; }).join('');
+  }
+  function lmNewProdChips(){ return lmnProducts().map(function(p){ return '<button type="button" class="capchip'+(LMN.products[p]?' on':'')+'" data-prod="'+esc(p)+'" onclick="CRM.lmNewChip(this)">'+esc(p)+'</button>'; }).join(''); }
+  function lmNewChip(btn){ var p=btn.getAttribute('data-prod'); LMN.products[p]=!LMN.products[p]; btn.classList.toggle('on',!!LMN.products[p]); lmnRenderCats(); }
   function lmNewCardChip(){ var el=$('lmn_card_chip'); if(!el) return;
     el.innerHTML=LMN.cardData?'<div style="display:flex;align-items:center;gap:9px;margin-top:6px;padding:7px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2)"><img src="'+LMN.cardData+'" style="height:46px;max-width:80px;border-radius:6px;border:1px solid var(--border);object-fit:cover"/><span class="cell-sub">Card / badge photo attached</span><span class="link-btn" style="margin-left:auto" onclick="CRM.lmNewCardRemove()">Remove</span></div>':''; }
   function lmNewCardRemove(){ LMN.cardData=null; lmNewCardChip(); var fi=$('lmn_card'); if(fi) fi.value=''; }
@@ -2859,29 +2913,39 @@ window.CRM = (function(){
   }
   function lmNewOpen(){
     if(!canManageLeads()){ toast('<b>Not permitted</b> · you can’t create leads'); return; }
-    LMN={products:{},cardData:null,force:false};
-    var camps=(CAMP.items||[]).filter(function(c){return c.active;});
-    var body='<div class="l-form"><div class="l-formnote">Create a lead directly (source: manual). Company is required — everything else can be enriched later. Saves to the real leads list.</div>'
+    LMN={products:{},imp:{},exp:{},crops:{},cats:{},contacts:[{name:'',role:'',phones:[''],emails:['']}],cardData:null,groupData:null,flyerData:null,force:false};
+    var lbl=function(t,m){ return '<label class="form-label" style="margin-top:10px">'+t+(m?' <span class="lmuted" style="font-weight:500;color:var(--text3)">· '+m+'</span>':'')+'</label>'; };
+    var fileRow=function(id,label,pick,cap){ return '<label class="form-label" style="margin-top:10px">'+label+'</label><input type="file" accept="image/*"'+(cap?' capture="environment"':'')+' id="'+id+'" onchange="CRM.'+pick+'(this)" class="form-input"/><div id="'+id+'_chip"></div>'; };
+    var body='<div class="l-form"><div class="l-formnote">Create a lead directly (source: manual). Company is required — everything else can be enriched later. Fields mirror Show Mode so a stand capture and a manual lead carry the same data.</div>'
       +field('lmn_company','Company','','e.g. Meridian Fresh Ltd')
-      +'<div class="grid2" style="gap:8px">'+field('lmn_contact','Contact name','','J. Whitfield')+field('lmn_role','Role / title','','Procurement Manager')+'</div>'
-      +'<div class="grid2" style="gap:8px">'+field('lmn_email','Email','','')+field('lmn_phone','Phone','','')+'</div>'
       +'<div class="grid2" style="gap:8px">'+field('lmn_country','Country','','')+field('lmn_website','Website','','')+'</div>'
-      +'<label class="form-label" style="margin-top:8px">Product interest</label><div style="display:flex;flex-wrap:wrap;gap:6px">'+lmNewProdChips()+'</div>'
+      +lbl('Campaign / source','which event or campaign this lead came from')+'<select class="form-select" id="lmn_campaign">'+lmnCampOptions()+'</select>'
+      +lbl('Contacts','each with their own phone(s) &amp; email(s)')
+      +'<div id="lmn_contacts">'+lmnContactsHtml()+'</div>'
+      +lbl('Importer type','all that apply')+'<div class="opt-tiles" id="lmn_imp">'+lmnTypeTiles('imp')+'</div>'
+      +'<input class="form-input" id="lmn_imp_other" placeholder="Other — which importer type?" style="display:none;margin-top:8px"/>'
+      +lbl('Exporter type','all that apply')+'<div class="opt-tiles" id="lmn_exp">'+lmnTypeTiles('exp')+'</div>'
+      +'<input class="form-input" id="lmn_exp_other" placeholder="Other — which exporter type?" style="display:none;margin-top:8px"/>'
+      +field('lmn_address','Address','','street, city, country')
+      +lbl('Crop type','all that apply')+'<div class="opt-tiles" id="lmn_crops" style="grid-template-columns:repeat(3,1fr)">'+lmnTypeTiles('crop')+'</div>'
+      +lbl('Products of interest','')+'<div class="capchips" id="lmn_prodchips">'+lmNewProdChips()+'</div>'
+      +lbl('Category','optional, per product')+'<div id="lmn_cats"></div>'
       +'<div class="grid2" style="gap:8px">'+field('lmn_port','Destination port','','e.g. Jebel Ali')+field('lmn_band','Volume band','','e.g. 1–5 containers')+'</div>'
       +field('lmn_season','Season window','','e.g. wk 40–48')
-      +(camps.length?selField('lmn_campaign','Campaign (optional)',[['','— none —']].concat(camps.map(function(c){return [c.id,c.name];})),''):'')
-      +'<label class="form-label" style="margin-top:8px">Business card / badge photo</label><input type="file" accept="image/*" capture="environment" id="lmn_card" onchange="CRM.lmNewCardPick(this)" class="form-input"/><div id="lmn_card_chip"></div>'
+      +fileRow('lmn_card','Business card / badge photo','lmNewCardPick',1)
+      +fileRow('lmn_group','Group photo with the lead','lmNewGroupPick',1)
+      +fileRow('lmn_flyer','Flyer / document','lmNewFlyerPick',0)
       +'<div class="l-qsec" style="cursor:pointer" onclick="var m=this.nextSibling;if(m)m.style.display=(m.style.display===\'none\'?\'block\':\'none\')">More details ▾</div>'
       +'<div id="lmn_more" style="display:none">'
-        +'<div class="grid2" style="gap:8px">'+field('lmn_exp','Exporter type','','Grower / Trader…')+field('lmn_imp','Importer type','','Agent / Retailer…')+'</div>'
         +field('lmn_industries','Products · industries','','')
         +field('lmn_trade','Trade countries','','')
         +field('lmn_qty','Annual quantity','','')
       +'</div>'
-      +'<label class="form-label" style="margin-top:8px">Notes</label><textarea class="form-input" id="lmn_notes" rows="3"></textarea>'
+      +'<label class="form-label" style="margin-top:10px">Notes</label><textarea class="form-input" id="lmn_notes" rows="3"></textarea>'
       +'<div id="lmn_warn"></div>'
       +'<div class="l-formact"><button class="btn btn-primary" onclick="CRM.lmNewSave()">Register lead</button><button class="btn btn-secondary" onclick="CRM.closeDlv()">Cancel</button></div></div>';
-    showDlv('New lead',body); lmNewCardChip();
+    showDlv('New lead',body); lmNewCardChip(); lmNewGroupChip(); lmNewFlyerChip(); lmnRenderCats();
+    if(!CAMP.loaded){ campLoad(function(){ var s=$('lmn_campaign'); if(s) s.innerHTML=lmnCampOptions(); }); }
   }
   function lmNewForce(){ LMN.force=true; lmNewSave(); }
   function lmNewSave(){
@@ -2892,30 +2956,45 @@ window.CRM = (function(){
     var dup=LM.rows.filter(function(l){ return (l.company||'').toLowerCase()===co.toLowerCase(); })[0];
     if(dup && !LMN.force){ if(w) w.innerHTML='<div class="alert-warn" style="margin-top:10px"><b>Possible duplicate</b> — '+esc(dup.company)+' ('+esc(dup.ref)+'). <span class="link-btn" onclick="CRM.lmOpen(\''+dup.id+'\')">Open existing</span> · <span class="link-btn" onclick="CRM.lmNewForce()">Save anyway</span></div>'; return; }
     function v(id){ var el=$(id), x=el&&el.value?el.value.trim():''; return x||null; }
-    var products=CAP_PRODUCTS.filter(function(p){return LMN.products[p];});
+    /* contacts → clean array; contact 1 mirrors the flat contact_/email/phone columns */
+    lmnReadContacts();
+    var contacts=(LMN.contacts||[]).map(function(c){ var ph=(c.phones||[]).map(function(s){return (s||'').trim();}).filter(Boolean); var em=(c.emails||[]).map(function(s){return (s||'').trim();}).filter(Boolean); return {name:(c.name||'').trim(),role:(c.role||'').trim(),phones:ph,emails:em}; }).filter(function(c){ return c.name||c.role||c.phones.length||c.emails.length; });
+    var primary=contacts[0]||{name:'',role:'',phones:[],emails:[]};
+    var imps=LMN_IMP.filter(function(x){return LMN.imp[x];}), exps=LMN_EXP.filter(function(x){return LMN.exp[x];});
+    var crops=LMN_CROPS.filter(function(x){return LMN.crops[x];});
+    var products=lmnProducts().filter(function(p){return LMN.products[p];});
+    lmnReadCats();
+    var cats={}; lmnCatProducts().forEach(function(p){ var t=(LMN.cats[p]||'').trim(); if(t) cats[p]=t; });
     var extra={};
-    if(v('lmn_exp')) extra.exporter_type=v('lmn_exp');
-    if(v('lmn_imp')) extra.importer_type=v('lmn_imp');
+    if(imps.length) extra.importer_type=imps.join(', ');
+    if(exps.length) extra.exporter_type=exps.join(', ');
+    if(LMN.imp['Other'] && v('lmn_imp_other')) extra.importer_other=v('lmn_imp_other');
+    if(LMN.exp['Other'] && v('lmn_exp_other')) extra.exporter_other=v('lmn_exp_other');
     if(v('lmn_industries')) extra.products_industries=v('lmn_industries');
     if(v('lmn_trade')) extra.trade_countries=v('lmn_trade');
     if(v('lmn_qty')) extra.annual_quantity=v('lmn_qty');
     var rec={ source:'manual', status:'captured', stage:0,
-      company_name:co, contact_name:v('lmn_contact'), contact_role:v('lmn_role'),
-      email:v('lmn_email'), phone:v('lmn_phone'), website:v('lmn_website'), country:v('lmn_country'),
+      company_name:co, contact_name:primary.name||null, contact_role:primary.role||null,
+      email:primary.emails[0]||null, phone:primary.phones[0]||null,
+      website:v('lmn_website'), country:v('lmn_country'), address:v('lmn_address'),
       destination_port:v('lmn_port'), expected_volume_band:v('lmn_band'), season_window:v('lmn_season'),
-      product_interest:(products.length?products:null), notes:v('lmn_notes'),
+      product_interest:(products.length?products:null),
+      contacts:(contacts.length?contacts:null),
+      crop_types:(crops.length?crops:null),
+      categories:(Object.keys(cats).length?cats:null),
+      notes:v('lmn_notes'),
       campaign_id:(($('lmn_campaign')||{}).value||'')||null,
       raw_payload:(Object.keys(extra).length?extra:null) };
     SB.from('crm_leads').insert(rec).select('id,campaign_id').single().then(function(res){
       if(res&&res.error){ if(w) w.innerHTML='<div class="alert-fail" style="margin-top:10px"><b>Save failed.</b> '+esc(res.error.message||'')+'</div>'; return; }
-      var row=res&&res.data, done=function(){ closeDlv(); toast('Lead <b>'+esc(co)+'</b> registered.'); lmReload(); };
-      if(LMN.cardData && row && row.id){
-        var path=(row.campaign_id||'nocamp')+'/'+row.id+'.jpg';
-        SB.storage.from('crm-lead-cards').upload(path, capDataUrlToBlob(LMN.cardData), {contentType:'image/jpeg',upsert:true}).then(function(up){
-          if(up&&up.error){ done(); return; }
-          SB.from('crm_leads').update({card_image_path:path}).eq('id',row.id).then(function(){ done(); },function(){ done(); });
-        },function(){ done(); });
-      } else { done(); }
+      var row=res&&res.data, camp=(row&&row.campaign_id)||'nocamp', id=row&&row.id, patch={}, pending=[];
+      function up(data,col,suffix){ if(!data||!id) return; pending.push(SB.storage.from('crm-lead-cards').upload(camp+'/'+id+suffix+'.jpg', capDataUrlToBlob(data), {contentType:'image/jpeg',upsert:true}).then(function(u){ if(!(u&&u.error)) patch[col]=camp+'/'+id+suffix+'.jpg'; },function(){})); }
+      up(LMN.cardData,'card_image_path','');
+      up(LMN.groupData,'group_image_path','-group');
+      up(LMN.flyerData,'flyer_image_path','-flyer');
+      var done=function(){ closeDlv(); toast('Lead <b>'+esc(co)+'</b> registered.'); lmReload(); };
+      if(!pending.length){ done(); return; }
+      Promise.all(pending).then(function(){ if(Object.keys(patch).length && id){ SB.from('crm_leads').update(patch).eq('id',id).then(done,done); } else done(); },done);
     },function(e){ if(w) w.innerHTML='<div class="alert-fail" style="margin-top:10px"><b>Save failed.</b> '+esc(String(e))+'</div>'; });
   }
 
@@ -2982,6 +3061,12 @@ window.CRM = (function(){
       +row('Country · region',or(l.country)+' · '+(l.assignedRegion?esc(lmRegionName(l.assignedRegion)):'<span class="cell-sub">unassigned</span>'))
       +(lmIsAssigned(l)?row('Owner',l.assignedTo?((lmIsMine(l)?'You':esc(l.assignedToName||'Another rep'))+(l.assignedByName?' <span class="cell-sub">· by '+esc(l.assignedByName)+'</span>':'')):'<span class="cell-sub">Unclaimed · in the region inbox</span>'):'')
       +row('Contact · role',or(l.contact)+(l.role?' · '+esc(l.role):''))
+      +(function(){ var cs=r0.contacts||[]; if(!cs.length) return ''; var out=[]; var p0=cs[0]||{}, ex=[];
+          if((p0.phones||[]).length>1) ex.push('phones: '+esc(p0.phones.join(', ')));
+          if((p0.emails||[]).length>1) ex.push('emails: '+esc(p0.emails.join(', ')));
+          if(ex.length) out.push(row('Primary · more','<span class="cell-sub">'+ex.join(' · ')+'</span>'));
+          cs.slice(1).forEach(function(c){ var bits=[]; if(c.phones&&c.phones.length) bits.push(esc(c.phones.join(', '))); if(c.emails&&c.emails.length) bits.push(esc(c.emails.join(', '))); out.push(row('Contact',esc(c.name||'—')+(c.role?' · '+esc(c.role):'')+(bits.length?' <span class="cell-sub">· '+bits.join(' · ')+'</span>':''))); });
+          return out.join(''); })()
       +row('Importer type',withOther(rp.importer_type,rp.importer_other))
       +row('Exporter type',withOther(rp.exporter_type,rp.exporter_other))
       +sec('How to reach')
@@ -2995,6 +3080,8 @@ window.CRM = (function(){
       +row('Annual quantity',or(rp.annual_quantity))
       +sec('Interest & signal')
       +row('Products of interest',or(l.products&&l.products.length?l.products:''))
+      +row('Crop type',or(r0.crop_types))
+      +((r0.categories&&Object.keys(r0.categories).length)?row('Category',Object.keys(r0.categories).map(function(p){return esc(p)+': '+esc(r0.categories[p]);}).join(' · ')):'')
       +row('Other products',or(rp.products_other))
       +row('Volume band',or(l.band))
       +row('Destination port',or(l.port))
@@ -3039,37 +3126,75 @@ window.CRM = (function(){
   }
   function lmEnrichProdChips(sel){ sel=sel||[]; var s={}; sel.forEach(function(p){s[p]=1;}); return CAP_PRODUCTS.map(function(p){ return '<button type="button" class="capchip'+(s[p]?' on':'')+'" data-prod="'+esc(p)+'" onclick="CRM.lmEnrichChip(this)">'+esc(p)+'</button>'; }).join(''); }
   function lmEnrichChip(btn){ btn.classList.toggle('on'); }
+  /* split a comma-joined type string into {map, other} against a known tile list */
+  function lmnSeedTypes(csv,known){ var m={},other=''; String(csv||'').split(',').map(function(s){return s.trim();}).filter(Boolean).forEach(function(v){ if(known.indexOf(v)>=0) m[v]=1; else { m['Other']=1; other=other?other+', '+v:v; } }); return {m:m,other:other}; }
   function lmEnrichOpen(id){
     var l=lmById(id); if(!l) return; var r=l.raw||{}, rp=r.raw_payload||{};
-    var typeOpts=function(a){ return [['','—']].concat(a.map(function(x){return [x,x];})); };
-    var body='<div class="l-form"><div class="l-formnote">Complete anything left blank at the stand — every capture field is here, and it all saves to the lead. Fill the empties, then Qualify.</div>'
+    /* seed the shared LMN state from the lead so the New-Lead controls render pre-filled */
+    var prod={}; (r.product_interest||[]).forEach(function(p){prod[p]=1;});
+    var impP=lmnSeedTypes(rp.importer_type,LMN_IMP), expP=lmnSeedTypes(rp.exporter_type,LMN_EXP);
+    var crops={}; (r.crop_types||[]).forEach(function(c){crops[c]=1;});
+    var contacts=(r.contacts&&r.contacts.length)
+      ? r.contacts.map(function(c){ return {name:c.name||'',role:c.role||'',phones:(c.phones&&c.phones.length?c.phones.slice():['']),emails:(c.emails&&c.emails.length?c.emails.slice():[''])}; })
+      : [{name:r.contact_name||'',role:r.contact_role||'',phones:[r.phone||''],emails:[r.email||'']}];
+    LMN={products:prod,imp:impP.m,exp:expP.m,crops:crops,cats:Object.assign({},r.categories||{}),contacts:contacts,cardData:null,groupData:null,flyerData:null,force:false};
+    var lbl=function(t,m){ return '<label class="form-label" style="margin-top:10px">'+t+(m?' <span class="lmuted" style="font-weight:500;color:var(--text3)">· '+m+'</span>':'')+'</label>'; };
+    var fileRow=function(fid,label,pick,cap,has){ return '<label class="form-label" style="margin-top:10px">'+label+'</label><input type="file" accept="image/*"'+(cap?' capture="environment"':'')+' id="'+fid+'" onchange="CRM.'+pick+'(this)" class="form-input"/>'+(has?'<div class="cell-sub" style="margin-top:3px">A photo is already saved — choose a file only to replace it.</div>':'')+'<div id="'+fid+'_chip"></div>'; };
+    var body='<div class="l-form"><div class="l-formnote">Edit / complete this lead — every capture field is here, and it all saves to the lead. Fill the empties, then Qualify.</div>'
       +'<div class="l-qhdr">'+esc(l.company)+'</div>'
-      +field('lm_contact','Contact name',r.contact_name,'e.g. J. Whitfield')
-      +field('lm_role','Contact role / title',r.contact_role,'e.g. Procurement Manager')
-      +'<div class="grid2">'+field('lm_email','Email',r.email,'name@company.com')+field('lm_phone','Phone',r.phone,'')+'</div>'
-      +'<div class="grid2">'+field('lm_website','Website',r.website,'www.company.com')+field('lm_country','Country',r.country,'')+'</div>'
+      +'<div class="grid2" style="gap:8px">'+field('lm_country','Country',r.country,'')+field('lm_website','Website',r.website,'')+'</div>'
+      +lbl('Contacts','each with their own phone(s) &amp; email(s)')+'<div id="lmn_contacts">'+lmnContactsHtml()+'</div>'
+      +lbl('Importer type','all that apply')+'<div class="opt-tiles" id="lmn_imp">'+lmnTypeTiles('imp')+'</div>'
+      +'<input class="form-input" id="lmn_imp_other" placeholder="Other — which importer type?" style="'+(impP.m['Other']?'':'display:none;')+'margin-top:8px" value="'+esc(impP.other||rp.importer_other||'')+'"/>'
+      +lbl('Exporter type','all that apply')+'<div class="opt-tiles" id="lmn_exp">'+lmnTypeTiles('exp')+'</div>'
+      +'<input class="form-input" id="lmn_exp_other" placeholder="Other — which exporter type?" style="'+(expP.m['Other']?'':'display:none;')+'margin-top:8px" value="'+esc(expP.other||rp.exporter_other||'')+'"/>'
       +field('lm_address','Address',r.address,'street, city, country')
-      +'<label class="form-label" style="margin-top:8px">Products of interest</label><div class="capchips" id="lm_products">'+lmEnrichProdChips(r.product_interest)+'</div>'
-      +'<div class="grid2">'+field('lm_band','Expected volume band',r.expected_volume_band,'e.g. 1–5 containers')+field('lm_qty','Annual quantity',rp.annual_quantity,'e.g. 300 cont. / season')+'</div>'
-      +'<div class="grid2">'+field('lm_port','Destination port',r.destination_port,'e.g. Jebel Ali')+field('lm_season','Season window',r.season_window,'e.g. wk 40–48')+'</div>'
-      +'<div class="grid2">'+selField('lm_exp','Exporter type',typeOpts(['Grower','Trader','Association','Other']),rp.exporter_type||'')+selField('lm_imp','Importer type',typeOpts(['Agent','Retailer','Wholesaler','Other']),rp.importer_type||'')+'</div>'
+      +lbl('Crop type','all that apply')+'<div class="opt-tiles" id="lmn_crops" style="grid-template-columns:repeat(3,1fr)">'+lmnTypeTiles('crop')+'</div>'
+      +lbl('Products of interest','')+'<div class="capchips" id="lmn_prodchips">'+lmNewProdChips()+'</div>'
+      +lbl('Category','optional, per product')+'<div id="lmn_cats"></div>'
+      +'<div class="grid2" style="gap:8px">'+field('lm_port','Destination port',r.destination_port,'e.g. Jebel Ali')+field('lm_band','Volume band',r.expected_volume_band,'e.g. 1–5 containers')+'</div>'
+      +'<div class="grid2" style="gap:8px">'+field('lm_season','Season window',r.season_window,'e.g. wk 40–48')+field('lm_qty','Annual quantity',rp.annual_quantity,'')+'</div>'
       +field('lm_industries','Products / industries they deal in',rp.products_industries,'what they trade')
       +field('lm_trade','Countries of export / import',rp.trade_countries,'e.g. UK, Germany, UAE')
-      +'<label class="form-label" style="margin-top:8px">Notes</label><textarea class="form-input" id="lm_notes" rows="3">'+esc(r.notes||'')+'</textarea>'
+      +fileRow('lmn_card','Business card / badge photo','lmNewCardPick',1,l.cardPath)
+      +fileRow('lmn_group','Group photo with the lead','lmNewGroupPick',1,l.groupPath)
+      +fileRow('lmn_flyer','Flyer / document','lmNewFlyerPick',0,l.flyerPath)
+      +'<label class="form-label" style="margin-top:10px">Notes</label><textarea class="form-input" id="lm_notes" rows="3">'+esc(r.notes||'')+'</textarea>'
       +'<div class="l-formact"><button class="btn btn-primary" onclick="CRM.lmEnrichSave(\''+l.id+'\')">Save enrichment</button><button class="btn btn-secondary" onclick="CRM.closeDlv()">Cancel</button></div></div>';
-    showDlv('Enrich lead',body);
+    showDlv('Enrich lead',body); lmNewCardChip(); lmNewGroupChip(); lmNewFlyerChip(); lmnRenderCats();
   }
   function lmEnrichSave(id){
     var l=lmById(id), r=(l&&l.raw)||{}, rp=Object.assign({},r.raw_payload||{});
     function setrp(k,v){ if(v) rp[k]=v; else delete rp[k]; }
-    setrp('exporter_type',lmVal('lm_exp')); setrp('importer_type',lmVal('lm_imp'));
+    lmnReadContacts();
+    var contacts=(LMN.contacts||[]).map(function(c){ var ph=(c.phones||[]).map(function(s){return (s||'').trim();}).filter(Boolean); var em=(c.emails||[]).map(function(s){return (s||'').trim();}).filter(Boolean); return {name:(c.name||'').trim(),role:(c.role||'').trim(),phones:ph,emails:em}; }).filter(function(c){ return c.name||c.role||c.phones.length||c.emails.length; });
+    var primary=contacts[0]||{name:'',role:'',phones:[],emails:[]};
+    var imps=LMN_IMP.filter(function(x){return LMN.imp[x];}), exps=LMN_EXP.filter(function(x){return LMN.exp[x];});
+    var crops=LMN_CROPS.filter(function(x){return LMN.crops[x];});
+    var products=lmnProducts().filter(function(p){return LMN.products[p];});
+    lmnReadCats();
+    var cats={}; lmnCatProducts().forEach(function(p){ var t=(LMN.cats[p]||'').trim(); if(t) cats[p]=t; });
+    setrp('importer_type', imps.length?imps.join(', '):'');
+    setrp('exporter_type', exps.length?exps.join(', '):'');
+    setrp('importer_other', (LMN.imp['Other']&&lmVal('lmn_imp_other'))?lmVal('lmn_imp_other'):'');
+    setrp('exporter_other', (LMN.exp['Other']&&lmVal('lmn_exp_other'))?lmVal('lmn_exp_other'):'');
     setrp('products_industries',lmVal('lm_industries')); setrp('trade_countries',lmVal('lm_trade')); setrp('annual_quantity',lmVal('lm_qty'));
-    var prods=[]; var box=$('lm_products'); if(box){ var on=box.querySelectorAll('.capchip.on'); for(var i=0;i<on.length;i++) prods.push(on[i].getAttribute('data-prod')); }
-    lmUpdate(id,{ contact_name:lmVal('lm_contact'), contact_role:lmVal('lm_role'), email:lmVal('lm_email'), phone:lmVal('lm_phone'),
+    var patch={ contact_name:primary.name||null, contact_role:primary.role||null, email:primary.emails[0]||null, phone:primary.phones[0]||null,
       website:lmVal('lm_website'), country:lmVal('lm_country'), address:lmVal('lm_address'),
       expected_volume_band:lmVal('lm_band'), destination_port:lmVal('lm_port'), season_window:lmVal('lm_season'),
-      product_interest:(prods.length?prods:null), notes:lmVal('lm_notes'),
-      raw_payload:(Object.keys(rp).length?rp:null) },'Enrichment saved.');
+      product_interest:(products.length?products:null),
+      contacts:(contacts.length?contacts:null),
+      crop_types:(crops.length?crops:null),
+      categories:(Object.keys(cats).length?cats:null),
+      notes:lmVal('lm_notes'),
+      raw_payload:(Object.keys(rp).length?rp:null) };
+    var camp=(r.campaign_id)||'nocamp', pending=[];
+    function up(data,col,suffix){ if(!data||!SB) return; pending.push(SB.storage.from('crm-lead-cards').upload(camp+'/'+id+suffix+'.jpg', capDataUrlToBlob(data), {contentType:'image/jpeg',upsert:true}).then(function(u){ if(!(u&&u.error)) patch[col]=camp+'/'+id+suffix+'.jpg'; },function(){})); }
+    up(LMN.cardData,'card_image_path','');
+    up(LMN.groupData,'group_image_path','-group');
+    up(LMN.flyerData,'flyer_image_path','-flyer');
+    if(!pending.length){ lmUpdate(id,patch,'Enrichment saved.'); return; }
+    Promise.all(pending).then(function(){ lmUpdate(id,patch,'Enrichment saved.'); },function(){ lmUpdate(id,patch,'Enrichment saved.'); });
   }
   function lmQualify(id){ var l=lmById(id); if(!l) return; lmUpdate(id,{ stage:1, disposition:'qualified', qualified_at:new Date().toISOString() },'<b>'+esc(l.company)+'</b> qualified → assign it to a region.'); }
   var lmAsg=null;
@@ -4666,14 +4791,15 @@ window.CRM = (function(){
   var CAMP_TZ=[['Africa/Cairo','Cairo · Egypt (GMT+2)'],['UTC','UTC (GMT+0)'],['Europe/London','London (GMT+0/1)'],['Europe/Berlin','Berlin · Amsterdam · Paris · Madrid (GMT+1/2)'],['Europe/Athens','Athens · Istanbul (GMT+3)'],['Europe/Moscow','Moscow (GMT+3)'],['Asia/Dubai','Dubai · Abu Dhabi (GMT+4)'],['Asia/Karachi','Karachi (GMT+5)'],['Asia/Kolkata','India (GMT+5:30)'],['Asia/Bangkok','Bangkok · Jakarta (GMT+7)'],['Asia/Singapore','Singapore · Kuala Lumpur (GMT+8)'],['Asia/Hong_Kong','Hong Kong (GMT+8)'],['Asia/Shanghai','China (GMT+8)'],['Asia/Tokyo','Tokyo · Seoul (GMT+9)'],['Australia/Sydney','Sydney (GMT+10/11)'],['America/Sao_Paulo','São Paulo (GMT-3)'],['America/New_York','New York · Toronto (GMT-5/4)'],['America/Chicago','Chicago (GMT-6/5)'],['America/Los_Angeles','Los Angeles (GMT-8/7)']];
   function campCurSym(c){ return c==='USD'?'$':(c==='GBP'?'£':'€'); }
   function campLink(tok){ return FORM_HOST+'?c='+encodeURIComponent(tok||''); }
-  function campLoad(){
-    if(!SB){ CAMP.loaded=true; renderCampaigns(); return; }
+  function campLoad(cb){
+    if(!SB){ CAMP.loaded=true; renderCampaigns(); if(typeof cb==='function') cb(); return; }
     CAMP.loading=true;
     SB.rpc('crm_campaigns_with_stats').then(function(res){
       CAMP.loading=false; CAMP.loaded=true;
       if(res&&!res.error) CAMP.items=res.data||[];
       if(currentTab==='campaigns') renderCampaigns();
-    }).catch(function(){ CAMP.loading=false; CAMP.loaded=true; if(currentTab==='campaigns') renderCampaigns(); });
+      if(typeof cb==='function') cb();
+    }).catch(function(){ CAMP.loading=false; CAMP.loaded=true; if(currentTab==='campaigns') renderCampaigns(); if(typeof cb==='function') cb(); });
   }
   function campReload(){ CAMP.loaded=false; campLoad(); }
   function campRefresh(btn){ if(btn){ btn.disabled=true; btn.textContent='↻ Refreshing…'; } campReload(); }
@@ -5222,6 +5348,8 @@ window.CRM = (function(){
     leadSub:leadSub, leadNav:leadNav, leadSet:leadSet, leadReset:leadReset, leadOpen:leadOpen,
     leadQuickAdd:leadQuickAdd, leadSubmitQuickAdd:gm(leadSubmitQuickAdd), leadEnrich:gm(leadEnrich),
     lmNewOpen:lmNewOpen, lmNewChip:lmNewChip, lmNewCardPick:lmNewCardPick, lmNewCardRemove:lmNewCardRemove, lmNewSave:gm(lmNewSave), lmNewForce:gm(lmNewForce),
+    lmnType:lmnType, lmnAddContact:lmnAddContact, lmnDelContact:lmnDelContact, lmnAddPhone:lmnAddPhone, lmnDelPhone:lmnDelPhone, lmnAddEmail:lmnAddEmail, lmnDelEmail:lmnDelEmail,
+    lmNewGroupPick:lmNewGroupPick, lmNewGroupRemove:lmNewGroupRemove, lmNewFlyerPick:lmNewFlyerPick, lmNewFlyerRemove:lmNewFlyerRemove,
     lmImportOpen:lmImportOpen, lmImportPre:lmImportPre, lmImportRun:gm(lmImportRun),
     leadQualifyOpen:leadQualifyOpen, leadGate:leadGate, leadQualifySave:gm(leadQualifySave),
     leadAssignOpen:leadAssignOpen, leadPickRegion:leadPickRegion, leadAssignSave:gm(leadAssignSave),
@@ -6095,6 +6223,21 @@ function injectCrmCss(){
 .crmv .opt-tile .tk{width:19px;height:19px;flex:0 0 auto;border-radius:6px;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:12px;color:transparent}
 .crmv .opt-tile.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,#fff);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(34,31,43,.10)}
 .crmv .opt-tile.on .tk{background:var(--accent);border-color:var(--accent);color:#fff}
+/* + New Lead — multi-contact / category / photo controls */
+.crmv .lmnc-card{border:1px solid var(--border2);border-radius:var(--r2);background:#fff;padding:11px;margin-bottom:9px}
+.crmv .lmnc-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.crmv .lmnc-idx{font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,#fff);padding:2px 8px;border-radius:6px}
+.crmv .lmnc-sub{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;color:var(--text3);margin:9px 0 5px}
+.crmv .lmnc-multi{display:flex;flex-direction:column;gap:6px}
+.crmv .lmnc-row{display:flex;gap:6px;align-items:center}
+.crmv .lmnc-row .form-input{flex:1}
+.crmv .lmnc-del{flex:0 0 auto;width:30px;height:30px;border-radius:7px;border:1px solid var(--border2);background:#fff;color:var(--text3);cursor:pointer;font-size:15px;line-height:1}
+.crmv .lmnc-del:hover{border-color:var(--red-border);color:var(--red)}
+.crmv .lmn-photochip{display:flex;align-items:center;gap:9px;margin-top:6px;padding:7px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2)}
+.crmv .lmn-photochip img{height:46px;max-width:80px;border-radius:6px;border:1px solid var(--border);object-fit:cover}
+.crmv .lmncat-row{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+.crmv .lmncat-p{flex:0 0 118px;font-size:12.5px;font-weight:700;color:var(--text)}
+.crmv .lmncat-row .form-input{flex:1}
 /* ── ELITE lift (materials / wells / masthead / save bar) — Pewter, additive ── */
 .crmv .lead-portal .card{border-color:var(--border2);box-shadow:0 1px 2px rgba(34,31,43,.05),0 12px 32px -16px rgba(34,31,43,.20)}
 .crmv .lead-portal .form-input{background:#fff;border-color:var(--border2);transition:border-color .15s,box-shadow .15s}
