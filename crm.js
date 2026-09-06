@@ -2651,7 +2651,7 @@ window.CRM = (function(){
      LEADS array + lead* handlers below still power the DEFERRED views (Lead
      inbox, Funnel, Conversion) — demo-only until the Phase-2 rules land.
      ═══════════════════════════════════════════════════════════════════════ */
-  var LM={rows:[],loaded:false,loading:false,q:'',f:{source:'all',region:'all',stage:'all'},myRegions:null,myManagerRegions:null,pipeAsg:'all',parkFilter:'all',xsFrom:'all',xsWants:'all',xsParked:true};
+  var LM={rows:[],loaded:false,loading:false,q:'',f:{source:'all',region:'all',stage:'all',campaign:'all'},myRegions:null,myManagerRegions:null,pipeAsg:'all',parkFilter:'all',xsFrom:'all',xsWants:'all',xsParked:true};
   /* Leads use the SAME region model as Tracking & Claims: regions (slug id + label) + region_members.
      Assignable regions = real regions from the loaded REGIONS list, excluding 'all' and the bucket. */
   function lmRealRegions(){ return REGIONS.filter(function(r){ return r.id!=='all' && !r.admin; }).map(function(r){ return [r.id,r.label]; }); }
@@ -2769,6 +2769,52 @@ window.CRM = (function(){
       if(res&&res.error){ toast('<b>Save failed.</b> '+esc(res.error.message||'')); return; }
       closeDlv(); toast(msg||'Saved.'); lmReload();
     }).catch(function(e){ toast('<b>Save failed.</b> '+esc(String(e))); });
+  }
+  /* Make a different contact the primary: move it to contacts[0] and re-mirror the flat
+     contact_name/role/email/phone columns (the fields list/search/dedup use). */
+  function lmSetPrimary(id,idx){
+    if(!canEditLeadStatus()){ toast('<b>Not permitted</b> · you have view-only access to leads'); return; }
+    if(!SB){ toast('No connection.'); return; }
+    var l=lmById(id); if(!l) return; var r=l.raw||{};
+    var cs=(r.contacts&&r.contacts.length)?r.contacts.slice():[{name:r.contact_name||'',role:r.contact_role||'',phones:(r.phone?[r.phone]:[]),emails:(r.email?[r.email]:[])}];
+    idx=parseInt(idx,10); if(!(idx>0&&idx<cs.length)) return;
+    var pick=cs.splice(idx,1)[0]; cs.unshift(pick); var p=cs[0]||{};
+    var patch={ contacts:cs, contact_name:p.name||null, contact_role:p.role||null, email:(p.emails&&p.emails[0])||null, phone:(p.phones&&p.phones[0])||null, updated_at:new Date().toISOString() };
+    SB.from('crm_leads').update(patch).eq('id',id).then(function(res){
+      if(res&&res.error){ toast('<b>Failed.</b> '+esc(res.error.message||'')); return; }
+      r.contacts=cs; r.contact_name=patch.contact_name; r.contact_role=patch.contact_role; r.email=patch.email; r.phone=patch.phone;
+      l.contact=patch.contact_name||''; l.role=patch.contact_role||''; l.email=patch.email||''; l.phone=patch.phone||'';
+      toast('Primary contact updated.'); render(); lmOpen(id);
+    },function(e){ toast('<b>Failed.</b> '+esc(String(e))); });
+  }
+  /* ── Delete a lead — admin/power_user only, strict type-the-company-name confirm ── */
+  function lmDeleteOpen(id){
+    if(!canManageLeads()){ toast('<b>Not permitted</b> · you can’t delete leads'); return; }
+    var l=lmById(id); if(!l) return;
+    var imgs=[l.cardPath,l.groupPath,l.flyerPath].filter(Boolean).length;
+    var body='<div class="l-form">'
+      +'<div class="alert-fail" style="margin-bottom:13px"><b>Delete this lead permanently?</b><br>This removes the lead and everything on it — contacts, notes'+(imgs?', '+imgs+' photo'+(imgs>1?'s':''):'')+' — and <b>cannot be undone</b>.</div>'
+      +'<div class="l-drow"><span class="cell-sub">Company</span><span>'+esc(l.company)+'</span></div>'
+      +'<div class="l-drow"><span class="cell-sub">Contact</span><span>'+esc(l.contact||'—')+(l.role?' · '+esc(l.role):'')+'</span></div>'
+      +'<div class="l-drow"><span class="cell-sub">Source · campaign</span><span>'+esc(lmSourceLabel(l.source))+(l.campaign?' · '+esc(l.campaign):'')+'</span></div>'
+      +'<label class="form-label" style="margin-top:13px">To confirm, type the company name: <span class="mono">'+esc(l.company)+'</span></label>'
+      +'<input class="form-input" id="lmdel_in" autocomplete="off" placeholder="'+esc(l.company)+'" oninput="CRM.lmDeleteCheck(\''+id+'\')"/>'
+      +'<div class="l-formact"><button class="btn btn-secondary" onclick="CRM.lmOpen(\''+id+'\')">Cancel</button><button class="btn btn-danger" id="lmdel_go" disabled onclick="CRM.lmDeleteConfirm(\''+id+'\')">Delete lead</button></div></div>';
+    showDlv('Delete lead',body);
+  }
+  function lmDeleteMatch(id){ var l=lmById(id); if(!l) return false; var v=(($('lmdel_in')||{}).value||'').trim().toLowerCase(); return !!v && v===(l.company||'').trim().toLowerCase(); }
+  function lmDeleteCheck(id){ var b=$('lmdel_go'); if(b) b.disabled=!lmDeleteMatch(id); }
+  function lmDeleteConfirm(id){
+    if(!canManageLeads()){ toast('<b>Not permitted</b>'); return; }
+    var l=lmById(id); if(!l) return;
+    if(!lmDeleteMatch(id)){ toast('Type the company name exactly to confirm.'); return; }
+    if(!SB){ toast('No connection.'); return; }
+    var b=$('lmdel_go'); if(b){ b.disabled=true; b.textContent='Deleting…'; }
+    SB.rpc('crm_delete_lead',{p_id:id}).then(function(res){
+      if(res&&res.error){ toast('<b>Delete failed.</b> '+esc(res.error.message||'')); if(b){b.disabled=false;b.textContent='Delete lead';} return; }
+      var paths=(res&&res.data)||[], done=function(){ closeDlv(); toast('Lead <b>'+esc(l.company)+'</b> deleted.'); lmReload(); };
+      if(paths&&paths.length){ try{ SB.storage.from('crm-lead-cards').remove(paths).then(done,done); }catch(e){ done(); } } else done();
+    },function(e){ toast('<b>Delete failed.</b> '+esc(String(e))); if(b){b.disabled=false;b.textContent='Delete lead';} });
   }
 
   /* ── deal-stage progression (Accepted → Engaged → Specs → Quoted → Shipped → Repeat) ──
@@ -3007,6 +3053,27 @@ window.CRM = (function(){
     var or=function(v){ return (v==null||v===''||(Array.isArray(v)&&!v.length))?'<span class="cell-sub">—</span>':esc(Array.isArray(v)?v.join(', '):String(v)); };
     var sec=function(t){ return '<div class="l-dsec">'+t+'</div>'; };
     var withOther=function(t,o){ return or(t)+(o?' <span class="cell-sub">· other: '+esc(o)+'</span>':''); };
+    /* Each contact as a self-contained business-card box: monogram + name/role + its own phone(s)/email(s).
+       "Primary" is positional (contacts[0], mirrored to the flat contact_/email/phone cols) — non-primary
+       cards get a "Make primary" action (editors only) that reorders + re-mirrors. */
+    var canEditL=(typeof canEditLeadStatus==='function')?canEditLeadStatus():true;
+    var contactCard=function(c,idx){
+      var primary=(idx===0);
+      var ph=(c.phones||[]).filter(Boolean), em=(c.emails||[]).filter(Boolean);
+      var mono=esc(((c.name||'?').trim().charAt(0)||'?').toUpperCase());
+      var lines=ph.map(function(p){ return '<div class="l-cc-line"><span class="l-cc-ic">☏</span>'+esc(p)+'</div>'; }).join('')
+               +em.map(function(e){ return '<div class="l-cc-line"><span class="l-cc-ic">✉</span>'+esc(e)+'</div>'; }).join('');
+      if(!lines) lines='<div class="l-cc-line cell-sub">No phone or email yet</div>';
+      var badge=primary?'<span class="l-cc-tag">Primary</span>'
+        :(canEditL?'<span class="l-cc-mkp" onclick="CRM.lmSetPrimary(\''+l.id+'\','+idx+')">Make primary</span>':'');
+      return '<div class="l-cc"><div class="l-cc-head"><span class="l-cc-mono">'+mono+'</span>'
+        +'<span class="l-cc-id"><span class="l-cc-name">'+esc(c.name||'—')+'</span>'+(c.role?'<span class="l-cc-role">'+esc(c.role)+'</span>':'')+'</span>'
+        +badge+'</div>'+lines+'</div>';
+    };
+    /* contacts array (new leads) or a single card built from the flat columns (older leads) */
+    var csList=(r0.contacts&&r0.contacts.length)?r0.contacts:[{name:r0.contact_name||'',role:r0.contact_role||'',phones:(r0.phone?[r0.phone]:[]),emails:(r0.email?[r0.email]:[])}];
+    csList=csList.filter(function(c){ return c.name||c.role||(c.phones&&c.phones.length)||(c.emails&&c.emails.length); });
+    var contactsBlock=csList.length?csList.map(function(c,i){ return contactCard(c,i); }).join(''):'<div class="cell-sub" style="padding:6px 0">No contact captured yet.</div>';
     var imgBlock=function(id,label,path){ return path?'<div style="margin:4px 0 10px"><div class="cell-sub" style="margin-bottom:4px">'+label+'</div><img id="'+id+'" alt="'+label+'" style="width:100%;max-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:zoom-in;display:none" onclick="if(this.src)CRM.campLightbox(this.src)"/><div class="cell-sub" id="'+id+'note">Loading…</div></div>':''; };
     /* card photo moves into the hero (keeps the #lmdet_img id so the signed-URL fetch below still fills it);
        the group photo stays in the Photos section (#lmdet_gimg). */
@@ -3051,6 +3118,7 @@ window.CRM = (function(){
       +(l.contact?'<div class="l-hero-sub">'+esc(l.contact)+(l.role?' · '+esc(l.role):'')+'</div>':'')
       +'<div class="l-hero-chips">'+heroChips+'</div>'
       +'<div class="l-hero-prov">'+prov+' · <span class="lot">'+esc(l.ref)+'</span></div></div></div>';
+    if(canManageLeads()) acts.push('<button class="btn btn-danger" onclick="CRM.lmDeleteOpen(\''+l.id+'\')">Delete…</button>');
     var actbar='<div class="l-actbar">'+acts.join('')+'</div>';
     var body='<div class="l-form l-detail">'+hero+actbar
       +sec('Identity')
@@ -3060,18 +3128,10 @@ window.CRM = (function(){
       +(lmIsParked(l)?row('Parked for',((l.parkProducts&&l.parkProducts.length)?l.parkProducts.map(function(p){return bdg('badge-park',p);}).join(' '):'<span class="cell-sub">later season</span>')+(l.parkRevisit?' <span class="cell-sub">· revisit '+esc(lmMonthLabel(l.parkRevisit))+'</span>':'')+(l.parkReason?' <span class="cell-sub">· '+esc(l.parkReason)+'</span>':'')):'')
       +row('Country · region',or(l.country)+' · '+(l.assignedRegion?esc(lmRegionName(l.assignedRegion)):'<span class="cell-sub">unassigned</span>'))
       +(lmIsAssigned(l)?row('Owner',l.assignedTo?((lmIsMine(l)?'You':esc(l.assignedToName||'Another rep'))+(l.assignedByName?' <span class="cell-sub">· by '+esc(l.assignedByName)+'</span>':'')):'<span class="cell-sub">Unclaimed · in the region inbox</span>'):'')
-      +row('Contact · role',or(l.contact)+(l.role?' · '+esc(l.role):''))
-      +(function(){ var cs=r0.contacts||[]; if(!cs.length) return ''; var out=[]; var p0=cs[0]||{}, ex=[];
-          if((p0.phones||[]).length>1) ex.push('phones: '+esc(p0.phones.join(', ')));
-          if((p0.emails||[]).length>1) ex.push('emails: '+esc(p0.emails.join(', ')));
-          if(ex.length) out.push(row('Primary · more','<span class="cell-sub">'+ex.join(' · ')+'</span>'));
-          cs.slice(1).forEach(function(c){ var bits=[]; if(c.phones&&c.phones.length) bits.push(esc(c.phones.join(', '))); if(c.emails&&c.emails.length) bits.push(esc(c.emails.join(', '))); out.push(row('Contact',esc(c.name||'—')+(c.role?' · '+esc(c.role):'')+(bits.length?' <span class="cell-sub">· '+bits.join(' · ')+'</span>':''))); });
-          return out.join(''); })()
       +row('Importer type',withOther(rp.importer_type,rp.importer_other))
       +row('Exporter type',withOther(rp.exporter_type,rp.exporter_other))
-      +sec('How to reach')
-      +row('Email',or(l.email))
-      +row('Phone',or(l.phone))
+      +sec('Contacts')+contactsBlock
+      +sec('Web &amp; address')
       +row('Website',or(l.website))
       +row('Address',or(r0.address))
       +sec('Their business')
@@ -3362,6 +3422,27 @@ window.CRM = (function(){
   }
   function lmSearch(v){ LM.q=v; clearTimeout(lmSearch._t); lmSearch._t=setTimeout(function(){ render(); var el=$('lm_q'); if(el){ el.focus(); el.value=LM.q; try{ el.selectionStart=el.selectionEnd=el.value.length; }catch(e){} } },160); }
   function lmSetF(k,v){ LM.f[k]=v; render(); }
+  /* Search predictions — matches labelled Campaign / Contact / Lead. Campaigns first (they set the
+     filter), then lead company names, then contact names; each capped so the list stays short. */
+  function lmSuggest(rows,q){
+    q=(q||'').trim().toLowerCase(); if(!q) return [];
+    var out=[], camp={}, co={}, ct={}, nC=0,nL=0,nT=0, i, l;
+    for(i=0;i<rows.length&&nC<4;i++){ l=rows[i]; if(l.campaignId&&l.campaign&&!camp[l.campaignId]&&l.campaign.toLowerCase().indexOf(q)>=0){ camp[l.campaignId]=1; out.push({type:'Campaign',label:l.campaign,cid:l.campaignId}); nC++; } }
+    for(i=0;i<rows.length&&nL<6;i++){ l=rows[i]; var c=l.company||'', k=c.toLowerCase(); if(c&&!co[k]&&k.indexOf(q)>=0){ co[k]=1; out.push({type:'Lead',label:c,id:l.id,sub:l.campaign||''}); nL++; } }
+    for(i=0;i<rows.length&&nT<6;i++){ l=rows[i]; var t=l.contact||'', kk=t.toLowerCase(); if(t&&!ct[kk]&&kk.indexOf(q)>=0){ ct[kk]=1; out.push({type:'Contact',label:t,id:l.id,sub:l.company||''}); nT++; } }
+    return out;
+  }
+  function lmSuggBox(rows){
+    if(!(LM.q||'').trim()) return '';
+    var sugg=lmSuggest(rows,LM.q); if(!sugg.length) return '';
+    return '<div class="lm-sugg">'+sugg.map(function(s){
+      var tag='<span class="lm-sugg-tag lm-sugg-'+s.type.toLowerCase()+'">'+s.type+'</span>';
+      var oc=(s.type==='Campaign')?'CRM.lmSuggCampaign(\''+s.cid+'\')':'CRM.lmSuggOpen(\''+s.id+'\')';
+      return '<div class="lm-sugg-row" onmousedown="'+oc+'"><span class="lm-sugg-label">'+esc(s.label)+'</span>'+(s.sub?'<span class="lm-sugg-sub">· '+esc(s.sub)+'</span>':'')+tag+'</div>';
+    }).join('')+'</div>';
+  }
+  function lmSuggCampaign(cid){ LM.q=''; LM.f.campaign=cid; render(); }
+  function lmSuggOpen(id){ LM.q=''; render(); lmOpen(id); }
 
   /* In-view segment tabs for the consolidated Leads / My Work / Funnel views (5-item sidebar).
      Reuses the .lsub/.lsubt styling; each tab drives leadNav(dest,key) and highlights against
@@ -3413,11 +3494,17 @@ window.CRM = (function(){
       kcard('Qualified',String(qualN),'ready to assign')+
       kcard('Assigned',String(asgN),'to a region');
     var q=(LM.q||'').toLowerCase();
+    /* campaign filter options — distinct campaigns present among these leads, + a "no campaign" bucket */
+    var campSeen={}, campOpts=[], anyNoCamp=false;
+    base.forEach(function(l){ if(l.campaignId){ if(!campSeen[l.campaignId]){ campSeen[l.campaignId]=1; campOpts.push([l.campaignId, l.campaign||l.campaignId]); } } else anyNoCamp=true; });
+    campOpts.sort(function(a,b){ return String(a[1]).localeCompare(String(b[1])); });
+    if(anyNoCamp) campOpts.push(['__none__','— No campaign —']);
     var list=all.filter(function(l){
       if(LM.f.source!=='all'&&l.source!==LM.f.source) return false;
       if(LM.f.region!=='all'&&(l.assignedRegion||'')!==LM.f.region) return false;
       if(LM.f.stage!=='all'&&String(l.stage)!==LM.f.stage) return false;
-      if(q){ var hay=(l.company+' '+l.contact+' '+l.email+' '+l.country).toLowerCase(); if(hay.indexOf(q)<0) return false; }
+      if(LM.f.campaign!=='all'){ if(LM.f.campaign==='__none__'){ if(l.campaignId) return false; } else if((l.campaignId||'')!==LM.f.campaign) return false; }
+      if(q){ var hay=(l.company+' '+l.contact+' '+l.email+' '+l.country+' '+(l.campaign||'')).toLowerCase(); if(hay.indexOf(q)<0) return false; }
       return true;
     });
     function fsel(key,label,opts){
@@ -3429,11 +3516,12 @@ window.CRM = (function(){
       +fsel('source','All sources',LM_SOURCES)
       +fsel('region','All regions',lmScopedRegions())
       +fsel('stage','All stages',[['0','Captured'],['1','Qualified'],['2','Assigned']])
-      +'<input class="form-input" id="lm_q" value="'+esc(LM.q)+'" style="width:auto;flex:1;min-width:150px" placeholder="Search company, contact, email, country…" oninput="CRM.lmSearch(this.value)"/></div>';
+      +fsel('campaign','All campaigns',campOpts)
+      +'<div style="position:relative;flex:1;min-width:170px"><input class="form-input" id="lm_q" value="'+esc(LM.q)+'" autocomplete="off" style="width:100%" placeholder="Search company, contact, email, country, campaign…" oninput="CRM.lmSearch(this.value)"/>'+lmSuggBox(all)+'</div></div>';
     var rows=list.map(function(l){
       return '<tr onclick="CRM.lmOpen(\''+l.id+'\')">'
         +'<td><span class="lot">'+esc(l.ref)+'</span></td>'
-        +'<td>'+esc(l.company)+'</td><td>'+esc(l.country)+'</td>'
+        +'<td><div>'+esc(l.company)+'</div>'+(l.contact?'<div class="cell-sub">'+esc(l.contact)+(l.role?' · '+esc(l.role):'')+'</div>':'')+'</td><td>'+esc(l.country)+'</td>'
         +'<td>'+(l.assignedRegion?bdg('badge-n',lmRegionName(l.assignedRegion)):bdg('badge-warn','unassigned'))+'</td>'
         +'<td>'+esc(l.product)+'</td>'
         +'<td>'+bdg('badge-n',lmSourceLabel(l.source))+'</td>'
@@ -5221,49 +5309,125 @@ window.CRM = (function(){
 
   /* ── Bulk import — REAL (paste rows → INSERT crm_leads, source='csv_import') ── */
   var lmImp=null;
+  /* 28-col template — mirrors the + New Lead form (3 contacts, multi-value cells via ';') */
+  var LM_TPL_COLS=['company','country','website','contact_name','contact_role','phones','emails','contact2_name','contact2_role','contact2_phones','contact2_emails','contact3_name','contact3_role','contact3_phones','contact3_emails','importer_type','exporter_type','crop_type','products','categories','address','destination_port','volume_band','season_window','products_industries','trade_countries','annual_quantity','notes'];
+  /* RFC-4180-ish CSV parser: quoted fields, embedded commas/newlines, "" escapes */
+  function lmCsvParse(text){
+    var rows=[], row=[], f='', inq=false, i=0, c; text=String(text||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    for(; i<text.length; i++){ c=text[i];
+      if(inq){ if(c==='"'){ if(text[i+1]==='"'){ f+='"'; i++; } else inq=false; } else f+=c; }
+      else { if(c==='"') inq=true; else if(c===','){ row.push(f); f=''; } else if(c==='\n'){ row.push(f); rows.push(row); row=[]; f=''; } else f+=c; }
+    }
+    if(f!==''||row.length){ row.push(f); rows.push(row); }
+    return rows;
+  }
+  function lmHdrKey(h){ return String(h||'').trim().toLowerCase().replace(/[\s\-]+/g,'_'); }
+  function lmSplitMulti(v){ return String(v==null?'':v).split(';').map(function(x){return x.trim();}).filter(Boolean); }
+  function lmMatchList(vals,known){ var out=[],unk=[]; vals.forEach(function(v){ var m=known.filter(function(k){return k.toLowerCase()===v.toLowerCase();})[0]; if(m) out.push(m); else unk.push(v); }); return {vals:out,unknown:unk}; }
+  function lmParseCats(v){ var o={}; lmSplitMulti(v).forEach(function(pair){ var idx=pair.indexOf(':'); if(idx>0){ var p=pair.slice(0,idx).trim(), val=pair.slice(idx+1).trim(); if(p&&val) o[p]=val; } }); return o; }
+  function lmBuildContacts(o){ var cs=[];
+    [['contact_name','contact_role','phones','emails'],['contact2_name','contact2_role','contact2_phones','contact2_emails'],['contact3_name','contact3_role','contact3_phones','contact3_emails']].forEach(function(k){
+      var name=(o[k[0]]||'').trim(), role=(o[k[1]]||'').trim(), ph=lmSplitMulti(o[k[2]]), em=lmSplitMulti(o[k[3]]);
+      if(name||role||ph.length||em.length) cs.push({name:name,role:role,phones:ph,emails:em});
+    }); return cs;
+  }
+  /* parse the textarea into header-keyed row objects (requires a header row with a 'company' column) */
+  function lmImpParseRows(){
+    var grid=lmCsvParse(($('li_csv')||{}).value||'').filter(function(r){ return r.some(function(c){return String(c).trim()!=='';}); });
+    if(!grid.length) return {rows:[],hasHeader:false};
+    var header=grid[0].map(lmHdrKey), hasHeader=header.indexOf('company')>=0;
+    if(!hasHeader) return {rows:[],hasHeader:false};
+    return {rows:grid.slice(1).map(function(cells){ var o={}; header.forEach(function(h,idx){ if(h) o[h]=(cells[idx]!=null?cells[idx]:''); }); return o; }), hasHeader:true};
+  }
+  /* one row object → a crm_leads record + the list of unrecognised option values */
+  function lmRecFromRow(o,campId){
+    var imp=lmMatchList(lmSplitMulti(o.importer_type),LMN_IMP), exp=lmMatchList(lmSplitMulti(o.exporter_type),LMN_EXP);
+    var crop=lmMatchList(lmSplitMulti(o.crop_type),LMN_CROPS), prod=lmMatchList(lmSplitMulti(o.products),lmnProducts());
+    var chosen={}; prod.vals.concat(prod.unknown).forEach(function(p){chosen[p.toLowerCase()]=p;});
+    var catsRaw=lmParseCats(o.categories), cats={};
+    Object.keys(catsRaw).forEach(function(kk){ var canon=(lmnProducts().filter(function(p){return p.toLowerCase()===kk.toLowerCase();})[0])||chosen[kk.toLowerCase()]; if(canon) cats[canon]=catsRaw[kk]; });
+    var contacts=lmBuildContacts(o), primary=contacts[0]||{name:'',role:'',phones:[],emails:[]};
+    var extra={}, impAll=imp.vals.concat(imp.unknown), expAll=exp.vals.concat(exp.unknown);
+    if(impAll.length) extra.importer_type=impAll.join(', ');
+    if(expAll.length) extra.exporter_type=expAll.join(', ');
+    if((o.products_industries||'').trim()) extra.products_industries=o.products_industries.trim();
+    if((o.trade_countries||'').trim()) extra.trade_countries=o.trade_countries.trim();
+    if((o.annual_quantity||'').trim()) extra.annual_quantity=o.annual_quantity.trim();
+    var products=prod.vals.concat(prod.unknown), crops=crop.vals.concat(crop.unknown);
+    var rec={ source:'csv_import', status:'captured', stage:0,
+      company_name:(o.company||'').trim(),
+      country:(o.country||'').trim()||null, website:(o.website||'').trim()||null, address:(o.address||'').trim()||null,
+      contact_name:primary.name||null, contact_role:primary.role||null, email:primary.emails[0]||null, phone:primary.phones[0]||null,
+      destination_port:(o.destination_port||'').trim()||null, expected_volume_band:(o.volume_band||'').trim()||null, season_window:(o.season_window||'').trim()||null,
+      product_interest:(products.length?products:null), contacts:(contacts.length?contacts:null),
+      crop_types:(crops.length?crops:null), categories:(Object.keys(cats).length?cats:null),
+      notes:(o.notes||'').trim()||null, campaign_id:campId||null,
+      raw_payload:(Object.keys(extra).length?extra:null) };
+    var unknown=[].concat(imp.unknown.map(function(x){return 'importer: '+x;}),exp.unknown.map(function(x){return 'exporter: '+x;}),crop.unknown.map(function(x){return 'crop: '+x;}),prod.unknown.map(function(x){return 'product: '+x;}));
+    return {rec:rec,unknown:unknown};
+  }
+  function lmCsvCell(v){ v=String(v==null?'':v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+  function lmTemplateCsv(){
+    var ex1=['Meridian Fresh Ltd','United Kingdom','www.meridian.co.uk','J. Whitfield','Procurement Manager','+44 20 7946 0000; +44 7700 900000','jw@meridian.co.uk','A. Salah','Buyer','+44 161 000 0000','a.salah@meridian.co.uk','','','','','Agent; Web Shop','Grower; Trader','Fresh; Frozen','Citrus; Grapes; Blueberry','Citrus: Lemon; Grapes: Flame Seedless','12 Dock Rd, London, UK','Felixstowe','2-4 containers / week','wk 40-50','Fresh produce import & distribution','UK; Ireland; France','500 containers / season','Met at the stand — keen on citrus'];
+    var ex2=['Nordfrucht GmbH','Germany','','K. Muller','Buyer','+49 40 111 2222','k.mueller@nordfrucht.de','','','','','','','','','Wholesaler','','Fresh','Grapes; Blueberry','Blueberry: Biloxi','','','1-3 containers / week','wk 44-52','','DE; NL','',''];
+    return [LM_TPL_COLS,ex1,ex2].map(function(r){ return r.map(lmCsvCell).join(','); }).join('\r\n')+'\r\n';
+  }
+  function lmImportDownloadTemplate(){
+    try{ var blob=new Blob(['﻿'+lmTemplateCsv()],{type:'text/csv;charset=utf-8;'}), url=URL.createObjectURL(blob), a=document.createElement('a');
+      a.href=url; a.download='dalos-leads-import-template.csv'; document.body.appendChild(a); a.click();
+      setTimeout(function(){ try{document.body.removeChild(a);URL.revokeObjectURL(url);}catch(e){} },120); toast('Template downloaded.');
+    }catch(e){ toast('Could not generate the template.'); }
+  }
+  function lmImportFilePick(input){ var f=input&&input.files&&input.files[0]; if(!f) return; var rd=new FileReader();
+    rd.onload=function(ev){ var t=String(ev.target.result||''); if(t.charCodeAt(0)===0xFEFF) t=t.slice(1); var ta=$('li_csv'); if(ta) ta.value=t; lmImportPre(); };
+    rd.readAsText(f); input.value='';
+  }
   function lmImportOpen(){
     if(!canManageLeads()){ toast('<b>Not permitted</b> · you can’t create leads'); return; }
     lmImp=null;
-    var camps=(CAMP.items||[]).filter(function(c){return c.active;});
-    var body='<div class="l-form"><div class="l-formnote">Paste one lead per line. Columns: <b>Company, Country, Product, Contact, Email, Phone</b> — only Company is required; separate multiple products with “;”. Pre-flight checks for duplicates before importing to the real leads list.</div>'
-      +(camps.length?selField('li_campaign','Campaign (optional)',[['','— none —']].concat(camps.map(function(c){return [c.id,c.name];})),''):'')
-      +'<label class="form-label" style="margin-top:8px">Paste rows / CSV</label><textarea class="form-input" id="li_csv" rows="6" style="font-family:var(--font-mono);font-size:12px" placeholder="Meridian Fresh Ltd, United Kingdom, Grapes, J. Whitfield, jw@meridian.co.uk\nNordfrucht GmbH, Germany, Grapes;Citrus"></textarea>'
+    var body='<div class="l-form"><div class="l-formnote">Download the template, fill in your rows, and upload the file — or paste rows straight in. Every + New Lead field is supported; multi-value cells use “<span class="mono">;</span>” (e.g. <span class="mono">Agent; Web Shop</span>). Only <b>Company</b> is required. Pre-flight checks each row before anything is written.</div>'
+      +'<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:10px">'
+        +'<button type="button" class="btn btn-secondary btn-sm" onclick="CRM.lmImportDownloadTemplate()">⭳ Download template (.csv)</button>'
+        +'<label class="btn btn-secondary btn-sm" style="cursor:pointer;position:relative">⭱ Upload CSV<input type="file" accept=".csv,text/csv" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer" onchange="CRM.lmImportFilePick(this)"/></label>'
+      +'</div>'
+      +'<label class="form-label" style="margin-top:4px">Campaign / source <span class="lmuted" style="font-weight:500;color:var(--text3)">· applied to every imported row</span></label><select class="form-select" id="li_campaign">'+lmnCampOptions()+'</select>'
+      +'<label class="form-label" style="margin-top:10px">Rows / CSV</label><textarea class="form-input" id="li_csv" rows="7" style="font-family:var(--font-mono);font-size:12px;white-space:pre;overflow:auto" placeholder="Paste rows here, or upload a CSV above. The first row must be the column headers — download the template to get them."></textarea>'
       +'<div id="li_pre"></div>'
       +'<div class="l-formact"><button class="btn btn-secondary" onclick="CRM.lmImportPre()">Pre-flight</button><button class="btn btn-primary" id="li_go" disabled onclick="CRM.lmImportRun()">Import ready rows</button><button class="btn btn-secondary" onclick="CRM.closeDlv()">Cancel</button></div></div>';
     showDlv('Bulk import leads',body);
-  }
-  function lmImpParse(){
-    return (($('li_csv')||{}).value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean).map(function(ln){
-      var p=ln.split(',').map(function(x){return x.trim();});
-      return { company:p[0]||'', country:p[1]||'', product:p[2]||'', contact:p[3]||'', email:p[4]||'', phone:p[5]||'' };
-    }).filter(function(r){return r.company;});
+    if(!CAMP.loaded){ campLoad(function(){ var s=$('li_campaign'); if(s) s.innerHTML=lmnCampOptions(); }); }
   }
   function lmImportPre(){
-    var rows=lmImpParse(), ready=[], dup=[], have={}, seen={};
+    var parsed=lmImpParseRows(), pre=$('li_pre'), go=$('li_go');
+    if(!parsed.hasHeader){ if(pre) pre.innerHTML='<div class="alert-fail" style="margin-top:10px"><b>No header row.</b> The first row must be the column names — download the template (it needs a <b>company</b> column), fill your rows under it, then upload.</div>'; if(go) go.disabled=true; lmImp=null; return; }
+    if(!parsed.rows.length){ if(pre) pre.innerHTML='<div class="alert-warn" style="margin-top:10px">Header found, but no data rows below it.</div>'; if(go) go.disabled=true; lmImp=null; return; }
+    var campId=(($('li_campaign')||{}).value||'')||null, have={}, seen={}, ready=[], dup=[], noco=0, unkSet={};
     LM.rows.forEach(function(l){ have[(l.company||'').toLowerCase()]=1; });
-    rows.forEach(function(r){ var k=r.company.toLowerCase(); if(have[k]||seen[k]) dup.push(r); else { seen[k]=1; ready.push(r); } });
-    lmImp={ready:ready,dup:dup};
-    var pre=$('li_pre'); if(pre) pre.innerHTML='<div class="ldp" style="margin-top:10px"><div class="ldp-h">Pre-flight · '+rows.length+' row(s)</div><div style="padding:10px 12px">'
+    parsed.rows.forEach(function(o){ var co=(o.company||'').trim(); if(!co){ noco++; return; }
+      var k=co.toLowerCase(); if(have[k]||seen[k]){ dup.push(co); return; } seen[k]=1;
+      var b=lmRecFromRow(o,campId); ready.push(b.rec); b.unknown.forEach(function(u){ unkSet[u]=1; });
+    });
+    lmImp={ready:ready};
+    var unknowns=Object.keys(unkSet);
+    if(pre) pre.innerHTML='<div class="ldp" style="margin-top:10px"><div class="ldp-h">Pre-flight · '+parsed.rows.length+' row(s)</div><div style="padding:10px 12px">'
       +'<div class="gate"><span class="gate-i gate-ok">✓</span> '+ready.length+' new lead(s) ready to import</div>'
-      +'<div class="gate"><span class="gate-i gate-w">!</span> '+dup.length+' duplicate(s) — already in leads, will be skipped</div></div></div>';
-    var go=$('li_go'); if(go) go.disabled=ready.length===0;
+      +(dup.length?'<div class="gate"><span class="gate-i gate-w">!</span> '+dup.length+' duplicate(s) — already in leads, skipped <span class="cell-sub">('+esc(dup.slice(0,6).join(', '))+(dup.length>6?'…':'')+')</span></div>':'')
+      +(noco?'<div class="gate"><span class="gate-i gate-no">✕</span> '+noco+' row(s) with no company — skipped</div>':'')
+      +(unknowns.length?'<div class="gate"><span class="gate-i gate-w">!</span> '+unknowns.length+' unrecognised value(s) — imported as free text; fix the CSV or tidy in-app: <span class="cell-sub">'+esc(unknowns.slice(0,10).join(' · '))+(unknowns.length>10?' …':'')+'</span></div>':'')
+      +'</div></div>';
+    if(go) go.disabled=ready.length===0;
   }
   function lmImportRun(){
     if(!canManageLeads()){ toast('<b>Not permitted</b>'); return; }
-    if(!lmImp||!lmImp.ready.length){ toast('Run Pre-flight first — nothing ready.'); return; }
+    if(!lmImp||!lmImp.ready||!lmImp.ready.length){ toast('Run Pre-flight first — nothing ready.'); return; }
     if(!SB){ toast('No connection.'); return; }
-    var camp=(($('li_campaign')||{}).value||'')||null;
-    var recs=lmImp.ready.map(function(r){
-      var prods=r.product?r.product.split(';').map(function(x){return x.trim();}).filter(Boolean).map(function(x){ var m=CAP_PRODUCTS.filter(function(p){return p.toLowerCase()===x.toLowerCase();})[0]; return m||x; }):[];
-      return { source:'csv_import', status:'captured', stage:0, company_name:r.company,
-        country:r.country||null, product_interest:(prods.length?prods:null),
-        contact_name:r.contact||null, email:r.email||null, phone:r.phone||null, campaign_id:camp };
-    });
-    var btn=$('li_go'); if(btn){ btn.disabled=true; btn.textContent='Importing…'; }
+    /* stamp the campaign at import time — it can be picked/changed after pre-flight built the rows */
+    var campId=(($('li_campaign')||{}).value||'')||null;
+    var recs=lmImp.ready.map(function(r){ r.campaign_id=campId; return r; }), btn=$('li_go'); if(btn){ btn.disabled=true; btn.textContent='Importing…'; }
     SB.from('crm_leads').insert(recs).select('id').then(function(res){
-      if(res&&res.error){ var pre=$('li_pre'); if(pre) pre.innerHTML='<div class="alert-fail" style="margin-top:10px"><b>Import failed.</b> '+esc(res.error.message||'')+'</div>'; if(btn){btn.disabled=false;btn.textContent='Import ready rows';} return; }
+      if(res&&res.error){ var pre=$('li_pre'); if(pre) pre.innerHTML+='<div class="alert-fail" style="margin-top:10px"><b>Import failed.</b> '+esc(res.error.message||'')+'</div>'; if(btn){btn.disabled=false;btn.textContent='Import ready rows';} return; }
       var n=(res&&res.data&&res.data.length)||recs.length; closeDlv(); toast(n+' lead(s) imported to the enrichment queue.'); lmReload();
-    },function(e){ var pre=$('li_pre'); if(pre) pre.innerHTML='<div class="alert-fail" style="margin-top:10px"><b>Import failed.</b> '+esc(String(e))+'</div>'; if(btn){btn.disabled=false;btn.textContent='Import ready rows';} });
+    },function(e){ var pre=$('li_pre'); if(pre) pre.innerHTML+='<div class="alert-fail" style="margin-top:10px"><b>Import failed.</b> '+esc(String(e))+'</div>'; if(btn){btn.disabled=false;btn.textContent='Import ready rows';} });
   }
 
   function leadImport(){
@@ -5343,14 +5507,14 @@ window.CRM = (function(){
     lmAssignMemberOpen:lmAssignMemberOpen, lmMemberPick:lmMemberPick, lmAssignMemberSave:lmAssignMemberSave, lmReleaseMember:lmReleaseMember,
     lmRefresh:lmRefresh, lmOpen:lmOpen, lmEnrichOpen:lmEnrichOpen, lmEnrichSave:gm(lmEnrichSave), lmEnrichChip:lmEnrichChip,
     lmQualify:gm(lmQualify), lmAssignOpen:lmAssignOpen, lmPickRegion:lmPickRegion, lmAssignSave:gm(lmAssignSave),
-    lmReturnOpen:lmReturnOpen, lmReturnPick:lmReturnPick, lmReturnSave:gs(lmReturnSave), lmRequeueOpen:lmRequeueOpen, lmRequeueSave:gs(lmRequeueSave), lmClaim:gs(lmClaim), lmSetDealStage:lmSetDealStage, lmNoteSave:gs(lmNoteSave), lmParkOpen:lmParkOpen, lmParkChip:lmParkChip, lmParkSave:gs(lmParkSave), lmReactivate:gs(lmReactivate), lmSetParkFilter:lmSetParkFilter, lmSetXs:lmSetXs, lmToggleXsParked:lmToggleXsParked, lmSearch:lmSearch, lmSetF:lmSetF, lmSetPipeAsg:lmSetPipeAsg,
+    lmReturnOpen:lmReturnOpen, lmReturnPick:lmReturnPick, lmReturnSave:gs(lmReturnSave), lmRequeueOpen:lmRequeueOpen, lmRequeueSave:gs(lmRequeueSave), lmClaim:gs(lmClaim), lmSetDealStage:lmSetDealStage, lmNoteSave:gs(lmNoteSave), lmParkOpen:lmParkOpen, lmParkChip:lmParkChip, lmParkSave:gs(lmParkSave), lmReactivate:gs(lmReactivate), lmSetParkFilter:lmSetParkFilter, lmSetXs:lmSetXs, lmToggleXsParked:lmToggleXsParked, lmSearch:lmSearch, lmSetF:lmSetF, lmSuggCampaign:lmSuggCampaign, lmSuggOpen:lmSuggOpen, lmSetPrimary:gs(lmSetPrimary), lmDeleteOpen:lmDeleteOpen, lmDeleteCheck:lmDeleteCheck, lmDeleteConfirm:lmDeleteConfirm, lmSetPipeAsg:lmSetPipeAsg,
     leadInboxCount:function(){ try{ lmEnsure(); return LM.loaded?inboxList().length:0; }catch(e){ return 0; } },
     leadSub:leadSub, leadNav:leadNav, leadSet:leadSet, leadReset:leadReset, leadOpen:leadOpen,
     leadQuickAdd:leadQuickAdd, leadSubmitQuickAdd:gm(leadSubmitQuickAdd), leadEnrich:gm(leadEnrich),
     lmNewOpen:lmNewOpen, lmNewChip:lmNewChip, lmNewCardPick:lmNewCardPick, lmNewCardRemove:lmNewCardRemove, lmNewSave:gm(lmNewSave), lmNewForce:gm(lmNewForce),
     lmnType:lmnType, lmnAddContact:lmnAddContact, lmnDelContact:lmnDelContact, lmnAddPhone:lmnAddPhone, lmnDelPhone:lmnDelPhone, lmnAddEmail:lmnAddEmail, lmnDelEmail:lmnDelEmail,
     lmNewGroupPick:lmNewGroupPick, lmNewGroupRemove:lmNewGroupRemove, lmNewFlyerPick:lmNewFlyerPick, lmNewFlyerRemove:lmNewFlyerRemove,
-    lmImportOpen:lmImportOpen, lmImportPre:lmImportPre, lmImportRun:gm(lmImportRun),
+    lmImportOpen:lmImportOpen, lmImportPre:lmImportPre, lmImportRun:gm(lmImportRun), lmImportDownloadTemplate:lmImportDownloadTemplate, lmImportFilePick:lmImportFilePick,
     leadQualifyOpen:leadQualifyOpen, leadGate:leadGate, leadQualifySave:gm(leadQualifySave),
     leadAssignOpen:leadAssignOpen, leadPickRegion:leadPickRegion, leadAssignSave:gm(leadAssignSave),
     leadEscalateOpen:leadEscalateOpen, leadEscalate:gs(leadEscalate),
@@ -6238,6 +6402,29 @@ function injectCrmCss(){
 .crmv .lmncat-row{display:flex;align-items:center;gap:10px;margin-bottom:7px}
 .crmv .lmncat-p{flex:0 0 118px;font-size:12.5px;font-weight:700;color:var(--text)}
 .crmv .lmncat-row .form-input{flex:1}
+/* Leads search predictions (typeahead) */
+.crmv .lm-sugg{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:40;background:#fff;border:1px solid var(--border2);border-radius:10px;box-shadow:0 10px 28px -10px rgba(34,31,43,.30);overflow:hidden;max-height:340px;overflow-y:auto}
+.crmv .lm-sugg-row{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border)}
+.crmv .lm-sugg-row:last-child{border-bottom:none}
+.crmv .lm-sugg-row:hover{background:var(--bg2)}
+.crmv .lm-sugg-label{font-size:13px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crmv .lm-sugg-sub{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.crmv .lm-sugg-tag{margin-left:auto;flex:0 0 auto;font-family:var(--font-mono);font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:5px}
+.crmv .lm-sugg-campaign{background:color-mix(in srgb,var(--accent) 14%,#fff);color:var(--accent)}
+.crmv .lm-sugg-lead{background:var(--bg2);color:var(--text2)}
+.crmv .lm-sugg-contact{background:var(--green-bg);color:var(--green)}
+/* Lead drawer — contact business-cards */
+.crmv .l-cc{border:1px solid var(--border2);border-radius:11px;background:#fff;padding:11px 13px;margin:8px 0;box-shadow:0 1px 2px rgba(34,31,43,.06)}
+.crmv .l-cc-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.crmv .l-cc-mono{width:34px;height:34px;flex:0 0 auto;border-radius:50%;background:color-mix(in srgb,var(--accent) 13%,#fff);color:var(--accent);display:flex;align-items:center;justify-content:center;font-family:var(--font-display,serif);font-size:16px;line-height:1}
+.crmv .l-cc-id{display:flex;flex-direction:column;min-width:0}
+.crmv .l-cc-name{font-size:14px;font-weight:600;color:var(--text);line-height:1.15;word-break:break-word}
+.crmv .l-cc-role{font-size:11.5px;color:var(--text3)}
+.crmv .l-cc-tag{margin-left:auto;flex:0 0 auto;font-family:var(--font-mono);font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:5px;background:color-mix(in srgb,var(--accent) 12%,#fff);color:var(--accent)}
+.crmv .l-cc-mkp{margin-left:auto;flex:0 0 auto;font-size:11px;font-weight:600;color:var(--accent);cursor:pointer;white-space:nowrap;border:1px solid var(--border2);border-radius:6px;padding:3px 9px;background:#fff}
+.crmv .l-cc-mkp:hover{background:color-mix(in srgb,var(--accent) 8%,#fff);border-color:var(--accent)}
+.crmv .l-cc-line{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--text2);padding:2px 0;word-break:break-word}
+.crmv .l-cc-ic{width:15px;text-align:center;color:var(--text3);flex:0 0 auto}
 /* ── ELITE lift (materials / wells / masthead / save bar) — Pewter, additive ── */
 .crmv .lead-portal .card{border-color:var(--border2);box-shadow:0 1px 2px rgba(34,31,43,.05),0 12px 32px -16px rgba(34,31,43,.20)}
 .crmv .lead-portal .form-input{background:#fff;border-color:var(--border2);transition:border-color .15s,box-shadow .15s}
